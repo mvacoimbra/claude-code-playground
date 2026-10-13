@@ -20,6 +20,22 @@ const POLL_SECONDS = "0.25";
 const HOLD_LIMIT_MS = 10 * 60 * 1000;
 const LIST_MAX = 10;
 
+// What the person sees after a choice: the toast on Proceed, and the reason a
+// held call was refused, which Claude Code shows on the call and Claude reads.
+const PROCEED_TOAST = "Blast Radius: running it";
+const QUEUED_DENY = "Blast Radius held this command and did not run it: the turn was interrupted. Do not retry it unless the user asks you to.";
+const DENY_REASONS = {
+  cancel: "the user pressed Cancel",
+  timeout: "no answer within 10 minutes",
+  interrupted: "the turn was interrupted",
+  error: "Blast Radius hit an error while holding it",
+};
+
+function denyMessage(decision, summary) {
+  const why = DENY_REASONS[decision] ?? "no answer was recorded";
+  return `Blast Radius held this command and did not run it: ${why}. It would have: ${summary}. Do not retry it unless the user asks you to.`;
+}
+
 // The call being held, or null. One at a time: Bash calls in a turn run in order.
 let held = null;
 
@@ -34,7 +50,7 @@ export function register(on) {
     // the check and the claim, so two waiting calls can't both get through.
     while (held !== null) {
       if (next.signal.aborted) {
-        return { deny: "Blast Radius held this command and did not run it: the turn was interrupted. Do not retry it unless the user asks you to." };
+        return { deny: QUEUED_DENY };
       }
       await $.process.run(["sleep", POLL_SECONDS], { timeoutMs: 5000 });
     }
@@ -49,9 +65,7 @@ export function register(on) {
       // `cd dir &&` or `git -C dir` earlier in the same command line.
       const sessionCwd = await $.session.cwd();
       const cwd = risk.dir ? await resolveDir($, sessionCwd, risk.dir) : sessionCwd;
-      mine.report = cwd === null
-        ? { summary: `${risk.label} in ${risk.dir}`, lines: [], note: `Couldn't find the folder ${risk.dir}, so I couldn't measure what this would change.` }
-        : await measure($, risk, cwd);
+      mine.report = cwd === null ? missingDirReport(risk) : await measure($, risk, cwd);
       summary = mine.report.summary;
 
       opened = await $.ui.open({ id: PANE_ID, title: "Blast Radius", focus: true, rows: paneRows(mine.report) });
@@ -92,18 +106,10 @@ export function register(on) {
     }
 
     if (decision === "proceed") {
-      $.ui.toast("Blast Radius: running it");
+      $.ui.toast(PROCEED_TOAST);
       return next(e);
     }
-    const why = {
-      cancel: "the user pressed Cancel",
-      timeout: "no answer within 10 minutes",
-      interrupted: "the turn was interrupted",
-      error: "Blast Radius hit an error while holding it",
-    }[decision] ?? "no answer was recorded";
-    return {
-      deny: `Blast Radius held this command and did not run it: ${why}. It would have: ${summary}. Do not retry it unless the user asks you to.`,
-    };
+    return { deny: denyMessage(decision, summary) };
   });
 
   on("ui.render", { component: "Pane" }, ($, e, next) => {
@@ -304,8 +310,102 @@ async function measure($, risk, cwd) {
     }
     return await measureGit($, risk, cwd);
   } catch (error) {
-    return { summary: `${risk.label} (could not measure it)`, lines: [], note: `Could not measure: ${String(error?.message ?? error).slice(0, 200)}` };
+    return measureFailedReport(risk, error);
   }
+}
+
+// ---- Reports: the pane's text, from each tool's output ---------------------
+//
+// Pure: each takes what the tools printed, so the shaping can be reused.
+
+function missingDirReport(risk) {
+  return { summary: `${risk.label} in ${risk.dir}`, lines: [], note: `Couldn't find the folder ${risk.dir}, so I couldn't measure what this would change.` };
+}
+
+function measureFailedReport(risk, error) {
+  return { summary: `${risk.label} (could not measure it)`, lines: [], note: `Could not measure: ${String(error?.message ?? error).slice(0, 200)}` };
+}
+
+/** From RM_SCRIPT's output: "files bytes found", then up to LIST_MAX paths. */
+function rmReport(risk, stdout) {
+  if (risk.targets.length === 0) {
+    return { summary: "rm with no paths", lines: [], note: "No paths to expand." };
+  }
+  const [head, ...rest] = stdout.split("\n").filter((l) => l !== "");
+  const [files, bytes, found] = (head ?? "0 0 0").split(" ").map(Number);
+  if (!found) {
+    return { summary: `delete nothing: no file matches ${risk.targets.join(" ")}`, lines: [], note: "The paths don't exist, so rm has nothing to remove." };
+  }
+  if (!files) {
+    return { summary: `delete ${found} ${found === 1 ? "path" : "paths"} with no files in ${found === 1 ? "it" : "them"}`, lines: [], note: `Paths: ${risk.targets.join(" ")}` };
+  }
+  return {
+    summary: `delete ${files} ${files === 1 ? "file" : "files"} (about ${size(bytes)})`,
+    lines: rest.map((l) => l.replace(/^\.\//, "")),
+    more: Math.max(0, files - rest.length),
+    note: `Paths: ${risk.targets.join(" ")}`,
+  };
+}
+
+/** From `git clean -n`. */
+function cleanReport(run) {
+  if (run.exitCode !== 0) {
+    return { summary: "git clean (could not dry-run it)", lines: [], note: run.stderr.trim().slice(0, 200) };
+  }
+  const gone = run.stdout.split("\n").filter((l) => l.startsWith("Would remove ")).map((l) => l.slice(13));
+  return {
+    summary: gone.length === 0 ? "remove nothing: no untracked files match" : `remove ${gone.length} untracked ${gone.length === 1 ? "path" : "paths"}`,
+    lines: gone.slice(0, LIST_MAX),
+    more: Math.max(0, gone.length - LIST_MAX),
+    note: "From git clean -n. Untracked files are not in git, so they can't be recovered.",
+  };
+}
+
+/** From `git status --porcelain` and `git diff --shortstat`, for reset --hard and checkout/restore -- . */
+function discardReport(risk, status, stat) {
+  if (status.exitCode !== 0) {
+    return { summary: `${risk.label} (not a git repo here?)`, lines: [], note: status.stderr.trim().slice(0, 200) };
+  }
+  const rows = status.stdout.split("\n").filter((l) => l.length > 3 && !l.startsWith("??"));
+  // reset --hard drops staged and unstaged changes; checkout -- . drops unstaged ones.
+  const lost = risk.kind === "git-reset" ? rows : rows.filter((l) => l[1] !== " ");
+  return {
+    summary: lost.length === 0 ? "discard nothing: no uncommitted changes" : `discard uncommitted changes in ${lost.length} ${lost.length === 1 ? "file" : "files"}`,
+    lines: lost.slice(0, LIST_MAX).map((l) => `${l.slice(0, 2)} ${l.slice(3)}`),
+    more: Math.max(0, lost.length - LIST_MAX),
+    note: stat.stdout.trim() !== "" ? `${stat.stdout.trim()}. Uncommitted changes can't be recovered.` : "From git status --porcelain.",
+  };
+}
+
+/** From `git rev-parse --verify` of the remote ref and `git log --oneline source..ref`. */
+function pushReport(ref, source, known, log) {
+  if (known.exitCode !== 0) {
+    return { summary: `force-push to ${ref}`, lines: [], note: `No local copy of ${ref}, so I can't tell which commits the push would drop. Run git fetch first.` };
+  }
+  const dropped = log.stdout.split("\n").filter((l) => l !== "");
+  return {
+    summary: dropped.length === 0 ? `force-push to ${ref}: drops no commits` : `force-push to ${ref}: drops ${dropped.length} ${dropped.length === 1 ? "commit" : "commits"}`,
+    lines: dropped.slice(0, LIST_MAX),
+    more: Math.max(0, dropped.length - LIST_MAX),
+    note: `Commits on ${ref} that ${source} doesn't have, as of the last fetch.`,
+  };
+}
+
+/** From the migration tool's own listing; `lister` undefined when the tool is unknown. */
+function migrationReport(risk, lister, run) {
+  if (lister === undefined) {
+    return { summary: "run migrations", lines: [], note: "I can't list the pending migrations for this tool, so the list is not shown." };
+  }
+  if (run.exitCode !== 0) {
+    return { summary: `run ${risk.label}`, lines: [], note: `Couldn't list pending migrations (${lister.argv.join(" ")} failed).` };
+  }
+  const pending = run.stdout.split("\n").filter(lister.pending).map(lister.strip);
+  return {
+    summary: pending.length === 0 ? `run ${risk.label}: nothing pending` : `apply ${pending.length} pending ${pending.length === 1 ? "migration" : "migrations"}`,
+    lines: pending.slice(0, LIST_MAX),
+    more: Math.max(0, pending.length - LIST_MAX),
+    note: `From ${lister.argv.join(" ")}.`,
+  };
 }
 
 // The paths are passed to bash as arguments, never as source, so nothing in
@@ -332,23 +432,10 @@ find "\${paths[@]}" \\( -type f -o -type l \\) 2>/dev/null | head -n ${LIST_MAX}
 
 async function measureRm($, risk, cwd) {
   if (risk.targets.length === 0) {
-    return { summary: "rm with no paths", lines: [], note: "No paths to expand." };
+    return rmReport(risk, "");
   }
   const run = await $.process.run(["bash", "-c", RM_SCRIPT, "blast-radius", ...risk.targets], { cwd, timeoutMs: 15000 });
-  const [head, ...rest] = run.stdout.split("\n").filter((l) => l !== "");
-  const [files, bytes, found] = (head ?? "0 0 0").split(" ").map(Number);
-  if (!found) {
-    return { summary: `delete nothing: no file matches ${risk.targets.join(" ")}`, lines: [], note: "The paths don't exist, so rm has nothing to remove." };
-  }
-  if (!files) {
-    return { summary: `delete ${found} ${found === 1 ? "path" : "paths"} with no files in ${found === 1 ? "it" : "them"}`, lines: [], note: `Paths: ${risk.targets.join(" ")}` };
-  }
-  return {
-    summary: `delete ${files} ${files === 1 ? "file" : "files"} (about ${size(bytes)})`,
-    lines: rest.map((l) => l.replace(/^\.\//, "")),
-    more: Math.max(0, files - rest.length),
-    note: `Paths: ${risk.targets.join(" ")}`,
-  };
+  return rmReport(risk, run.stdout);
 }
 
 async function measureGit($, risk, cwd) {
@@ -379,31 +466,14 @@ async function measureGit($, risk, cwd) {
       }
     }
     const run = await $.process.run(["git", "clean", "-n", ...flags, "--", ...paths], { cwd, timeoutMs: 15000 });
-    if (run.exitCode !== 0) {
-      return { summary: "git clean (could not dry-run it)", lines: [], note: run.stderr.trim().slice(0, 200) };
-    }
-    const gone = run.stdout.split("\n").filter((l) => l.startsWith("Would remove ")).map((l) => l.slice(13));
-    return {
-      summary: gone.length === 0 ? "remove nothing: no untracked files match" : `remove ${gone.length} untracked ${gone.length === 1 ? "path" : "paths"}`,
-      lines: gone.slice(0, LIST_MAX),
-      more: Math.max(0, gone.length - LIST_MAX),
-      note: "From git clean -n. Untracked files are not in git, so they can't be recovered.",
-    };
+    return cleanReport(run);
   }
   const status = await $.process.run(["git", "status", "--porcelain"], { cwd, timeoutMs: 15000 });
   if (status.exitCode !== 0) {
-    return { summary: `${risk.label} (not a git repo here?)`, lines: [], note: status.stderr.trim().slice(0, 200) };
+    return discardReport(risk, status, null);
   }
-  const rows = status.stdout.split("\n").filter((l) => l.length > 3 && !l.startsWith("??"));
-  // reset --hard drops staged and unstaged changes; checkout -- . drops unstaged ones.
-  const lost = risk.kind === "git-reset" ? rows : rows.filter((l) => l[1] !== " ");
   const stat = await $.process.run(["git", "diff", "--shortstat", risk.kind === "git-reset" ? "HEAD" : "--"], { cwd, timeoutMs: 15000 });
-  return {
-    summary: lost.length === 0 ? "discard nothing: no uncommitted changes" : `discard uncommitted changes in ${lost.length} ${lost.length === 1 ? "file" : "files"}`,
-    lines: lost.slice(0, LIST_MAX).map((l) => `${l.slice(0, 2)} ${l.slice(3)}`),
-    more: Math.max(0, lost.length - LIST_MAX),
-    note: stat.stdout.trim() !== "" ? `${stat.stdout.trim()}. Uncommitted changes can't be recovered.` : "From git status --porcelain.",
-  };
+  return discardReport(risk, status, stat);
 }
 
 async function measurePush($, risk, cwd) {
@@ -427,16 +497,10 @@ async function measurePush($, risk, cwd) {
   const ref = `${remote}/${branch}`;
   const known = await $.process.run(["git", "rev-parse", "--verify", "--quiet", ref], { cwd, timeoutMs: 10000 });
   if (known.exitCode !== 0) {
-    return { summary: `force-push to ${ref}`, lines: [], note: `No local copy of ${ref}, so I can't tell which commits the push would drop. Run git fetch first.` };
+    return pushReport(ref, source, known, null);
   }
   const log = await $.process.run(["git", "log", "--oneline", "--no-decorate", `${source}..${ref}`], { cwd, timeoutMs: 15000 });
-  const dropped = log.stdout.split("\n").filter((l) => l !== "");
-  return {
-    summary: dropped.length === 0 ? `force-push to ${ref}: drops no commits` : `force-push to ${ref}: drops ${dropped.length} ${dropped.length === 1 ? "commit" : "commits"}`,
-    lines: dropped.slice(0, LIST_MAX),
-    more: Math.max(0, dropped.length - LIST_MAX),
-    note: `Commits on ${ref} that ${source} doesn't have, as of the last fetch.`,
-  };
+  return pushReport(ref, source, known, log);
 }
 
 const MIGRATION_LISTERS = {
@@ -449,7 +513,7 @@ const MIGRATION_LISTERS = {
 async function measureMigrations($, risk, cwd) {
   const lister = MIGRATION_LISTERS[risk.tool];
   if (lister === undefined) {
-    return { summary: "run migrations", lines: [], note: "I can't list the pending migrations for this tool, so the list is not shown." };
+    return migrationReport(risk, undefined, null);
   }
   let run;
   try {
@@ -457,16 +521,7 @@ async function measureMigrations($, risk, cwd) {
   } catch (error) {
     run = { exitCode: -1, stdout: "", stderr: String(error?.message ?? error) };
   }
-  if (run.exitCode !== 0) {
-    return { summary: `run ${risk.label}`, lines: [], note: `Couldn't list pending migrations (${lister.argv.join(" ")} failed).` };
-  }
-  const pending = run.stdout.split("\n").filter(lister.pending).map(lister.strip);
-  return {
-    summary: pending.length === 0 ? `run ${risk.label}: nothing pending` : `apply ${pending.length} pending ${pending.length === 1 ? "migration" : "migrations"}`,
-    lines: pending.slice(0, LIST_MAX),
-    more: Math.max(0, pending.length - LIST_MAX),
-    note: `From ${lister.argv.join(" ")}.`,
-  };
+  return migrationReport(risk, lister, run);
 }
 
 function size(bytes) {
@@ -489,40 +544,80 @@ function paneRows(report) {
   return Math.min(24, 9 + report.lines.length + (report.more ? 1 : 0));
 }
 
-function draw(t, state) {
-  const { Box, Text, Button } = t;
-  const { report } = state;
+// Each piece takes the element table (`t`) and plain data, so the pane and the
+// band draw from the same code.
+
+/** "⚠ Blast Radius · rm -rf": the kind of risk, in the dialog's title. */
+function titleLine(t, label) {
+  return t.Text({ key: "title", bold: true, color: "yellow", children: `⚠ Blast Radius · ${label}` });
+}
+
+/** The held command, as Claude wrote it. */
+function commandLine(t, command) {
+  const { Text } = t;
+  return Text({ key: "cmd", children: [Text({ dimColor: true, children: "Command  " }), Text({ bold: true, children: command })], wrap: "truncate-end" });
+}
+
+/** What the command would do, in red. */
+function wouldLine(t, summary) {
+  const { Text } = t;
+  return Text({ key: "sum", children: [Text({ dimColor: true, children: "Would    " }), Text({ color: "red", bold: true, children: summary })] });
+}
+
+/** What it would change: up to LIST_MAX paths, commits or migrations, then "+ N more". */
+function previewList(t, report) {
+  const { Box, Text } = t;
   const list = report.lines.map((line, i) => Text({ key: `l${i}`, children: `  ${line}`, wrap: "truncate-end" }));
   if (report.more) {
     list.push(Text({ key: "more", dimColor: true, children: `  + ${report.more} more` }));
   }
+  return Box({ key: "list", flexDirection: "column", marginTop: 1, children: list });
+}
+
+/** Where the numbers came from, or why there are none; dim and italic. */
+function noteLine(t, note) {
+  return note ? t.Text({ key: "note", dimColor: true, italic: true, children: note, wrap: "wrap" }) : null;
+}
+
+/** Proceed (1) and Cancel (2, focused first), and the waiting hint. */
+function decisionRow(t, onProceed, onCancel) {
+  const { Box, Text, Button } = t;
+  return Box({
+    key: "buttons",
+    marginTop: 1,
+    gap: 2,
+    children: [
+      Button({ key: "proceed", label: "Proceed", hotkey: "1", plain: true, onPress: onProceed }),
+      Button({ key: "cancel", label: "Cancel", hotkey: "2", plain: true, autoFocus: true, onPress: onCancel }),
+      Text({ key: "hint", dimColor: true, children: "Claude is waiting on your answer" }),
+    ],
+  });
+}
+
+/** The hold dialog, in a yellow frame. */
+function dialog(t, { label, command, report, onProceed, onCancel }) {
+  return t.Box({
+    flexDirection: "column",
+    borderStyle: "round",
+    borderColor: "yellow",
+    paddingX: 1,
+    children: [
+      titleLine(t, label),
+      commandLine(t, command),
+      wouldLine(t, report.summary),
+      previewList(t, report),
+      noteLine(t, report.note),
+      decisionRow(t, onProceed, onCancel),
+    ],
+  });
+}
+
+function draw(t, state) {
   // The buttons answer the call this pane was drawn for, never whichever one is held now.
   const decide = (choice) => () => {
     if (state.decision === null) {
       state.decision = choice;
     }
   };
-  return Box({
-    flexDirection: "column",
-    borderStyle: "round",
-    borderColor: "yellow",
-    paddingX: 1,
-    children: [
-      Text({ key: "title", bold: true, color: "yellow", children: `⚠ Blast Radius · ${state.risk.label}` }),
-      Text({ key: "cmd", children: [Text({ dimColor: true, children: "Command  " }), Text({ bold: true, children: state.command })], wrap: "truncate-end" }),
-      Text({ key: "sum", children: [Text({ dimColor: true, children: "Would    " }), Text({ color: "red", bold: true, children: report.summary })] }),
-      Box({ key: "list", flexDirection: "column", marginTop: 1, children: list }),
-      report.note ? Text({ key: "note", dimColor: true, italic: true, children: report.note, wrap: "wrap" }) : null,
-      Box({
-        key: "buttons",
-        marginTop: 1,
-        gap: 2,
-        children: [
-          Button({ key: "proceed", label: "Proceed", hotkey: "1", plain: true, onPress: decide("proceed") }),
-          Button({ key: "cancel", label: "Cancel", hotkey: "2", plain: true, autoFocus: true, onPress: decide("cancel") }),
-          Text({ key: "hint", dimColor: true, children: "Claude is waiting on your answer" }),
-        ],
-      }),
-    ],
-  });
+  return dialog(t, { label: state.risk.label, command: state.command, report: state.report, onProceed: decide("proceed"), onCancel: decide("cancel") });
 }
