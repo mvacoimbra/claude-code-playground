@@ -3,7 +3,8 @@
 //
 // Replay Theater: records the file edits Claude makes in a turn, then lets you
 // step through them in a pane, one diff at a time. It joins the /mods panel as
-// `$.replay`, whose `open` action opens the pane.
+// `$.replay`, whose `open` action opens the pane, and lists every component it
+// draws in the panel's Components tab through `$.replay.catalog`.
 //
 // Claude Code 2.1.280 function hooks. Load with --plugin-dir.
 
@@ -127,8 +128,8 @@ async function openReplay($) {
 
 // ---- Drawing --------------------------------------------------------------
 //
-// Each builder takes the element table (`ui`) and plain data, so the pane and
-// the band draw from the same code.
+// Each builder takes the element table (`ui`) and plain data, so the pane, the
+// band and the /mods catalog all draw from the same code.
 
 // The band's diff cap: what fits in the rows the band may take.
 function bandDiffLines(maxRows) {
@@ -250,6 +251,176 @@ function replayView($, e, inBand) {
   });
 }
 
+// ---- The catalog ----------------------------------------------------------
+//
+// Every component Replay Theater draws, named, for the Components tab of /mods.
+// Drawn from the builders above with sample steps, then made static: a press
+// cannot cross from the hub to this mod.
+
+const noop = () => {};
+
+// A tree another mod can draw: plain data. A Button's onPress stays in this
+// mod, so a Button is drawn as text the way the terminal draws it (`[ Label ]`,
+// inverted when it holds the focus), and every function is left out.
+function staticTree(ui, node) {
+  if (Array.isArray(node)) return node.map((n) => staticTree(ui, n)).filter((n) => n !== undefined && n !== null);
+  if (node === null || typeof node !== "object") return typeof node === "function" ? undefined : node;
+  if (node.type === "Button") {
+    const p = node.props ?? {};
+    const label = String(p.label ?? p.key ?? "");
+    const style = { ...(p.dimColor ? { dimColor: true } : {}), ...(p.autoFocus ? { inverse: true } : {}) };
+    if (p.plain) {
+      return ui.Text({ key: p.key, ...style, children: p.hotkey ? [ui.Text({ color: "suggestion", bold: true, children: p.hotkey }), `: ${label}`] : label });
+    }
+    return ui.Text({ key: p.key, ...(p.variant === "primary" ? { color: "suggestion" } : {}), ...style, children: `[ ${label} ]` });
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (k === "press" || typeof v === "function" || v === undefined) continue;
+    out[k] = k === "props" ? Object.fromEntries(Object.entries(v ?? {}).filter(([, x]) => typeof x !== "function" && x !== undefined)) : staticTree(ui, v);
+  }
+  return out;
+}
+
+// A turn that renamed greet to welcome: the sample the catalog replays.
+function sampleSteps() {
+  const readme = ["# Greeter", "", "Says hello.", "", "## Usage", "", "```ts", "greet('Ada')", "```", "", "## License", "", "MIT"];
+  const doc = [
+    "# welcome()", "", "Returns a greeting for `name`.", "", "```ts", "welcome('Ada') // 'Welcome, Ada!'", "```", "",
+    "## Options", "", "- `name`: who to greet", "- `loud`: shout it", "", "## Since", "", "0.3.0",
+  ];
+  return [
+    makeStep("Edit", "src/greet.ts",
+      "export function greet(name: string) {\n  return `Hello, ${name}!`\n}",
+      "export function welcome(name: string) {\n  return `Welcome, ${name}!`\n}", ""),
+    makeStep("MultiEdit", "src/cli.ts", "import { greet } from './greet'", "import { welcome } from './greet'", "edit 1 of 2"),
+    makeStep("MultiEdit", "src/cli.ts", "  console.log(greet(argv[2]))", "  console.log(welcome(argv[2]))", "edit 2 of 2"),
+    makeStep("Write", "docs/welcome.md", "", doc.join("\n"), "new file"),
+    makeStep("Write", "README.md", readme.join("\n"),
+      ["# Welcomer", ...readme.slice(1, 7), "welcome('Ada')", ...readme.slice(8, 12), "Apache-2.0"].join("\n"), "rewrite"),
+    makeStep("Write", "src/.keep", "", "", "new file"),
+    makeStep("Edit", "test/greet.test.ts", "greet(", "welcome(", "replace all"),
+  ];
+}
+
+const CATALOG_TEXT = {
+  "band-hint": {
+    en: ["Replay hint above the prompt", "After a turn that edited files: the edit count and the Replay button (r)."],
+    pt: ["Aviso de replay acima do prompt", "Depois de um turno com edições: quantas edições e o botão Replay (r)."],
+  },
+  "pane-first-step": {
+    en: ["Replay pane, first step (an Edit)", "The pane on step 1: header, step strip, file, counts, diff and buttons."],
+    pt: ["Painel do replay, primeiro passo (um Edit)", "O painel no passo 1: cabeçalho, faixa de passos, arquivo, contagem, diff e botões."],
+  },
+  "pane-multiedit-step": {
+    en: ["Replay pane, a MultiEdit step", "One edit of a MultiEdit, noted as \"edit 2 of 2\"."],
+    pt: ["Painel do replay, passo de MultiEdit", "Uma edição de um MultiEdit, marcada como \"edit 2 of 2\"."],
+  },
+  "pane-write-new-file": {
+    en: ["Replay pane, a Write of a new file", "A new file: every line added, capped at 12 lines then \"… N more lines\"."],
+    pt: ["Painel do replay, Write de arquivo novo", "Um arquivo novo: todas as linhas adicionadas, até 12 linhas e depois \"… N more lines\"."],
+  },
+  "pane-write-rewrite": {
+    en: ["Replay pane, a Write that rewrites a file", "A rewrite: one line of context around each change, a skipped run as \"⋯\"."],
+    pt: ["Painel do replay, Write que reescreve um arquivo", "Uma reescrita: uma linha de contexto em volta de cada mudança, trechos pulados como \"⋯\"."],
+  },
+  "pane-no-line-changes": {
+    en: ["Replay pane, a step with no line changes", "A step whose diff is empty, such as a Write of an empty file."],
+    pt: ["Painel do replay, passo sem mudança de linhas", "Um passo com diff vazio, como um Write de um arquivo vazio."],
+  },
+  "pane-last-step": {
+    en: ["Replay pane, last step", "The last step highlighted in the strip, here an Edit with replace all."],
+    pt: ["Painel do replay, último passo", "O último passo destacado na faixa, aqui um Edit com replace all."],
+  },
+  "pane-no-edits": {
+    en: ["Replay pane, nothing to replay", "What the pane says when the turn recorded no edits."],
+    pt: ["Painel do replay, nada para rever", "O que o painel diz quando o turno não registrou edições."],
+  },
+  "pane-header": {
+    en: ["Pane header", "\"▶ Replay Theater\" and \"step k of n\"."],
+    pt: ["Cabeçalho do painel", "\"▶ Replay Theater\" e \"step k of n\"."],
+  },
+  "step-strip": {
+    en: ["Step strip", "One numbered cell per edit, the current one highlighted in cyan."],
+    pt: ["Faixa de passos", "Uma célula numerada por edição, a atual destacada em ciano."],
+  },
+  "step-file-and-counts": {
+    en: ["Step file and counts", "The file path, the tool and its note, and the added (+) and removed (-) line counts."],
+    pt: ["Arquivo e contagem do passo", "O caminho do arquivo, a ferramenta e sua nota, e as linhas adicionadas (+) e removidas (-)."],
+  },
+  "diff-lines": {
+    en: ["Diff lines", "Removed lines in red, added lines in green, unchanged context dim."],
+    pt: ["Linhas do diff", "Linhas removidas em vermelho, adicionadas em verde, contexto sem mudança esmaecido."],
+  },
+  "diff-skipped-run": {
+    en: ["Skipped run marker", "\"⋯\" where unchanged lines between two changes are left out."],
+    pt: ["Marcador de trecho pulado", "\"⋯\" onde as linhas sem mudança entre duas alterações ficam de fora."],
+  },
+  "diff-more-lines": {
+    en: ["More lines notice", "\"… N more lines\" under a diff longer than the cap."],
+    pt: ["Aviso de mais linhas", "\"… N more lines\" embaixo de um diff maior que o limite."],
+  },
+  "diff-no-line-changes": {
+    en: ["No line changes notice", "\"(no line changes)\" for a step with an empty diff."],
+    pt: ["Aviso de nenhuma mudança", "\"(no line changes)\" para um passo com diff vazio."],
+  },
+  "nav-buttons": {
+    en: ["Navigation buttons", "◀ Prev (p), Next ▶ (n, focused first) and Close (c)."],
+    pt: ["Botões de navegação", "◀ Prev (p), Next ▶ (n, com o foco primeiro) e Close (c)."],
+  },
+  "band-replay-narrow": {
+    en: ["Replay in the band, narrow terminal", "When the terminal can't place a pane (80 columns), the replay draws above the prompt with a shorter diff."],
+    pt: ["Replay na faixa, terminal estreito", "Quando o terminal não consegue abrir um painel (80 colunas), o replay aparece acima do prompt com um diff menor."],
+  },
+};
+
+function catalogOf($, args) {
+  const lang = args?.lang === "pt" ? "pt" : "en";
+  const surface = args?.surface ?? "terminal";
+  const columns = Math.max(40, Number(args?.columns) || 80);
+  const pane = $.ui.resolve({ surface, component: "Pane" });
+  const band = $.ui.resolve({ surface, component: "AbovePrompt" });
+  const steps = sampleSteps();
+  const width = Math.max(40, columns - 4);
+  const at = (index, maxDiff = MAX_DIFF_LINES, ui = pane, w = width) =>
+    replayTree(ui, { steps, index, width: w, maxDiff, onGo: noop, onClose: noop });
+  const lines = (diff, maxDiff = MAX_DIFF_LINES) => pane.Box({ width: columns, children: [diffBlock(pane, diff, maxDiff, width)] });
+  const sized = (tree) => pane.Box({ width: columns, flexDirection: "column", children: [tree] });
+
+  // A gap and an overflow, each on its own, from the sample's diffs.
+  const gap = steps[4].diff;
+  const gapAt = gap.findIndex((l) => l.op === "~");
+
+  const trees = {
+    "band-hint": band.Box({ width: columns, children: [hintTree(band, steps.length, noop)] }),
+    "pane-first-step": sized(at(0)),
+    "pane-multiedit-step": sized(at(2)),
+    "pane-write-new-file": sized(at(3)),
+    "pane-write-rewrite": sized(at(4)),
+    "pane-no-line-changes": sized(at(5)),
+    "pane-last-step": sized(at(steps.length - 1)),
+    "pane-no-edits": sized(replayTree(pane, { steps: [], index: 0, width, maxDiff: MAX_DIFF_LINES, onGo: noop, onClose: noop })),
+    "pane-header": sized(headerRow(pane, 1, steps.length)),
+    "step-strip": sized(stepStrip(pane, steps.length, 1)),
+    "step-file-and-counts": sized(pane.Box({ flexDirection: "column", children: [fileLine(pane, steps[0]), metaRow(pane, steps[0])] })),
+    "diff-lines": lines(steps[0].diff),
+    "diff-skipped-run": lines(gap.slice(Math.max(0, gapAt - 2), gapAt + 3)),
+    "diff-more-lines": lines(steps[3].diff.slice(0, 6), 3),
+    "diff-no-line-changes": lines([]),
+    "nav-buttons": sized(navRow(pane, noop, noop, noop)),
+    // A pane always has room on a desktop; only a narrow terminal falls back to
+    // the band, where the diff is cut to the rows the band has (5 of 12 here).
+    "band-replay-narrow": surface === "terminal"
+      ? band.Box({ width: Math.min(columns, 80), children: [at(3, bandDiffLines(12), band, Math.min(columns, 80) - 4)] })
+      : band.Text({ dimColor: true, children: lang === "pt" ? "Só num terminal estreito demais para o painel." : "Only in a terminal too narrow for the pane." }),
+  };
+
+  return Object.keys(CATALOG_TEXT).map((id) => {
+    const [name, help] = CATALOG_TEXT[id][lang];
+    return { id, name, help, tree: staticTree(pane, trees[id]) };
+  });
+}
+
 // The hub's /mods panel. `lang` is the hub's; anything but 'pt' is English.
 const TEXT = {
   en: {
@@ -306,15 +477,20 @@ async function actOn($, args) {
 }
 
 export function register(on, options) {
-  // Adds `$.replay` for the hub's /mods panel. A call is the `replay.panel` or
-  // `replay.act` event, which the hooks below answer; the stub is the floor.
+  // Adds `$.replay` for the hub's /mods panel. A call is the `replay.panel`,
+  // `replay.act` or `replay.catalog` event, which the hooks below answer; the
+  // stub is the floor.
   on("engine.create", async ($, e, next) => {
     const built = await next(e);
-    return { ...built, replay: { panel: async () => ({ title: "", sections: [] }), act: async () => ({}) } };
+    return {
+      ...built,
+      replay: { panel: async () => ({ title: "", sections: [] }), act: async () => ({}), catalog: async () => [] },
+    };
   });
 
   on("replay.panel", async ($, e) => ({ value: panelOf(e) }));
   on("replay.act", async ($, e) => ({ value: await actOn($, e) }));
+  on("replay.catalog", async ($, e) => ({ value: catalogOf($, e) }));
 
   // Record each edit, then let it run. Never blocks the call.
   on("tool.call", async ($, e, next) => {

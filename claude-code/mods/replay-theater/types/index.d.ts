@@ -1,4 +1,5 @@
-// The contract of `$.replay`: Replay Theater's tab in the /mods panel.
+// The contract of `$.replay`: Replay Theater's tab in the /mods panel, and its components
+// in the panel's Components tab.
 
 export type ReplayLang = 'en' | 'pt'
 export type ReplayPanelArgs = { lang: ReplayLang; surface: 'terminal' | 'desktop' | 'vscode' | 'mobile'; columns: number }
@@ -28,12 +29,25 @@ export type ReplayPanel = {
 export type ReplayActArgs = { id: string; value?: string }
 // `message` only when there is nothing to replay.
 export type ReplayActResult = { message?: string }
+// One component Replay Theater draws, for the Components tab of /mods.
+export type ReplayCatalogEntry = {
+  // Stable, kebab-case: what a person names when asking for a change.
+  id: string
+  // The component's name, as a person would say it ("Replay pane, first step").
+  name: string
+  // One line on what it is and where it shows.
+  help?: string
+  // The component drawn for `args.surface` at `args.columns`, from the same builders the mod
+  // draws it with in place, in a state worth seeing. Static: a press cannot cross to the mod.
+  tree: unknown
+}
 
 declare module 'claude-code' {
   interface EngineInterface {
     replay: {
       panel: (args: ReplayPanelArgs) => Promise<ReplayPanel>
       act: (args: ReplayActArgs) => Promise<ReplayActResult>
+      catalog: (args: ReplayPanelArgs) => Promise<ReplayCatalogEntry[]>
     }
   }
 }
