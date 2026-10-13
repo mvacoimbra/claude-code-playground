@@ -19,6 +19,7 @@ The patterns it demonstrates:
 - Recording from `tool.call` and always passing the call on with `next(e)`.
 - Grouping work by turn with `turn.start` and `turn.complete`, and skipping subagent turns.
 - A tab in the `/mods` panel: the mod adds `$.replay` at `engine.create` and answers `replay.panel` and `replay.act`, following the mods panel protocol. Its contract is `types/index.d.ts`.
+- A component catalog: every piece Replay Theater draws (the hint, the pane in each state, its parts) shows, named, in the Components tab of `/mods`, through `$.replay.catalog`.
 - A `Pane` with `Button` elements and hotkeys, with a fallback to the `AbovePrompt` band.
 
 ## Demo
