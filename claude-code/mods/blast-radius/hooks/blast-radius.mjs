@@ -12,6 +12,9 @@
 // free. So the hold loop waits on a short `$.process.run(["sleep", ...])` until
 // a button's onPress sets the decision.
 //
+// $.blast.catalog: every component it draws, named, for the Components tab of
+// the /mods hub (it has no tab of its own there).
+//
 // The host reads `on(...)` and `$.noun.method(...)` from source, so they are
 // spelled literally, and helpers that take `$` are top-level functions.
 
@@ -40,6 +43,16 @@ function denyMessage(decision, summary) {
 let held = null;
 
 export function register(on) {
+  // Adds `$.blast` for the /mods hub: no tab, only the catalog of what Blast
+  // Radius draws, for the hub's Components tab. A call is the `blast.catalog`
+  // event, which the hook below answers; the stub is the floor.
+  on("engine.create", async ($, e, next) => {
+    const built = await next(e);
+    return { ...built, blast: { catalog: async () => [] } };
+  });
+
+  on("blast.catalog", async ($, e) => ({ value: catalogOf($, e) }));
+
   on("tool.call", { tool: "Bash" }, async ($, e, next) => {
     const risk = classify(String(e.command ?? ""));
     if (risk === null) {
@@ -316,7 +329,7 @@ async function measure($, risk, cwd) {
 
 // ---- Reports: the pane's text, from each tool's output ---------------------
 //
-// Pure: each takes what the tools printed, so the shaping can be reused.
+// Pure, so the catalog shapes its samples with the same code as a real hold.
 
 function missingDirReport(risk) {
   return { summary: `${risk.label} in ${risk.dir}`, lines: [], note: `Couldn't find the folder ${risk.dir}, so I couldn't measure what this would change.` };
@@ -544,8 +557,8 @@ function paneRows(report) {
   return Math.min(24, 9 + report.lines.length + (report.more ? 1 : 0));
 }
 
-// Each piece takes the element table (`t`) and plain data, so the pane and the
-// band draw from the same code.
+// Each piece takes the element table (`t`) and plain data, so the pane, the
+// band and the /mods catalog all draw from the same code.
 
 /** "⚠ Blast Radius · rm -rf": the kind of risk, in the dialog's title. */
 function titleLine(t, label) {
@@ -620,4 +633,258 @@ function draw(t, state) {
     }
   };
   return dialog(t, { label: state.risk.label, command: state.command, report: state.report, onProceed: decide("proceed"), onCancel: decide("cancel") });
+}
+
+// ---- The catalog ----------------------------------------------------------
+//
+// Every component Blast Radius draws, named, for the Components tab of /mods.
+// Each sample is a real command read by `classify`, and its report is shaped by
+// the same functions as a real hold, from the output its tools would print.
+// Then made static: a press cannot cross from the hub to this mod.
+
+const noop = () => {};
+
+// A tree another mod can draw: plain data. A Button's onPress stays in this
+// mod, so a Button is drawn as text the way the terminal draws it (`1: Proceed`
+// for a plain one, inverted when it holds the focus), and every function is
+// left out.
+function staticTree(t, node) {
+  if (Array.isArray(node)) {
+    return node.map((n) => staticTree(t, n)).filter((n) => n !== undefined && n !== null);
+  }
+  if (node === null || typeof node !== "object") {
+    return typeof node === "function" ? undefined : node;
+  }
+  if (node.type === "Button") {
+    const p = node.props ?? {};
+    const label = String(p.label ?? p.key ?? "");
+    const style = { ...(p.dimColor ? { dimColor: true } : {}), ...(p.autoFocus ? { inverse: true } : {}) };
+    if (p.plain) {
+      return t.Text({ key: p.key, ...style, children: p.hotkey ? [t.Text({ color: "suggestion", bold: true, children: p.hotkey }), `: ${label}`] : label });
+    }
+    return t.Text({ key: p.key, ...(p.variant === "primary" ? { color: "suggestion" } : {}), ...style, children: `[ ${label} ]` });
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (k === "press" || typeof v === "function" || v === undefined) {
+      continue;
+    }
+    out[k] = k === "props" ? Object.fromEntries(Object.entries(v ?? {}).filter(([, x]) => typeof x !== "function" && x !== undefined)) : staticTree(t, v);
+  }
+  return out;
+}
+
+const ok = (stdout) => ({ exitCode: 0, stdout, stderr: "" });
+const failed = (stderr) => ({ exitCode: 1, stdout: "", stderr });
+
+// What each tool would print for the samples.
+const SAMPLE = {
+  rmOut: [
+    "214 3565158 2",
+    "./dist/index.js", "./dist/index.js.map", "./dist/cli.js", "./dist/cli.js.map", "./dist/assets/logo-3f2a9c.svg",
+    "./dist/assets/app-81be0d.css", "./.cache/babel/7c/1f0e2a.json", "./.cache/babel/9d/44ab10.json",
+    "./.cache/eslint/.eslintcache", "./.cache/ts/tsbuildinfo",
+  ].join("\n"),
+  porcelain: ["M  src/api/client.ts", " M src/app.tsx", "MM package.json", "A  src/hooks/useExport.ts", " D docs/old-setup.md", "?? scratch.txt"].join("\n"),
+  shortstat: " 5 files changed, 48 insertions(+), 17 deletions(-)",
+  clean: ["Would remove .env.local", "Would remove build/", "Would remove coverage/", "Would remove notes.txt", "Would remove src/scratch.ts", "Would remove tmp/"].join("\n"),
+  pushLog: ["a1b2c3d fix: retry flaky uploads", "9e8f7a6 feat: add the export button", "4d5c6b7 docs: update the changelog"].join("\n"),
+  showmigrations: ["[X] accounts.0003_profile", "[ ] accounts.0004_add_avatar", "[ ] billing.0012_invoice_due_date", "[ ] billing.0013_backfill_due_dates"].join("\n"),
+};
+
+const CATALOG_TEXT = {
+  "hold-rm-rf": {
+    en: ["Hold dialog, rm -rf", "A recursive delete held: how many files and how much space, and the first paths it would remove."],
+    pt: ["Diálogo de espera, rm -rf", "Uma remoção recursiva segurada: quantos arquivos, quanto espaço e os primeiros caminhos que sairiam."],
+  },
+  "hold-git-reset-hard": {
+    en: ["Hold dialog, git reset --hard", "The staged and unstaged changes it would throw away, file by file, with git's line counts."],
+    pt: ["Diálogo de espera, git reset --hard", "As mudanças staged e unstaged que seriam descartadas, arquivo por arquivo, com a contagem de linhas do git."],
+  },
+  "hold-git-checkout": {
+    en: ["Hold dialog, git checkout -- .", "The unstaged changes a checkout or restore of the whole tree would drop."],
+    pt: ["Diálogo de espera, git checkout -- .", "As mudanças unstaged que um checkout ou restore da árvore inteira descartaria."],
+  },
+  "hold-git-clean": {
+    en: ["Hold dialog, git clean", "The untracked files and folders it would remove, from a dry run."],
+    pt: ["Diálogo de espera, git clean", "Os arquivos e pastas não rastreados que seriam removidos, de um dry run."],
+  },
+  "hold-force-push": {
+    en: ["Hold dialog, force push", "The commits on the remote branch the push would drop."],
+    pt: ["Diálogo de espera, force push", "Os commits do branch remoto que o push descartaria."],
+  },
+  "hold-migration": {
+    en: ["Hold dialog, migration", "The pending migrations it would apply, from the tool's own listing (here Django)."],
+    pt: ["Diálogo de espera, migration", "As migrations pendentes que seriam aplicadas, da listagem da própria ferramenta (aqui Django)."],
+  },
+  "hold-migration-unknown-tool": {
+    en: ["Hold dialog, migration with an unknown tool", "A migrate command whose tool Blast Radius can't list, so no list is shown."],
+    pt: ["Diálogo de espera, migration de ferramenta desconhecida", "Um comando migrate cuja ferramenta o Blast Radius não sabe listar, então nenhuma lista aparece."],
+  },
+  "hold-migration-nothing-pending": {
+    en: ["Hold dialog, no pending migrations", "A migration with nothing left to apply."],
+    pt: ["Diálogo de espera, nenhuma migration pendente", "Uma migration sem nada pendente para aplicar."],
+  },
+  "hold-migration-list-failed": {
+    en: ["Hold dialog, migrations could not be listed", "The tool's listing failed, so only the command is shown."],
+    pt: ["Diálogo de espera, migrations não listadas", "A listagem da ferramenta falhou, então só o comando aparece."],
+  },
+  "hold-nothing-to-delete": {
+    en: ["Hold dialog, nothing to delete", "rm -rf on paths that don't exist."],
+    pt: ["Diálogo de espera, nada para apagar", "rm -rf em caminhos que não existem."],
+  },
+  "hold-empty-folders": {
+    en: ["Hold dialog, folders with no files", "rm -rf on paths that exist but hold no files."],
+    pt: ["Diálogo de espera, pastas sem arquivos", "rm -rf em caminhos que existem mas não têm arquivos."],
+  },
+  "hold-rm-no-paths": {
+    en: ["Hold dialog, rm with no paths", "A forced rm with nothing to expand."],
+    pt: ["Diálogo de espera, rm sem caminhos", "Um rm forçado sem nada para expandir."],
+  },
+  "hold-nothing-to-discard": {
+    en: ["Hold dialog, nothing to discard", "git reset --hard on a clean working tree."],
+    pt: ["Diálogo de espera, nada para descartar", "git reset --hard numa árvore de trabalho limpa."],
+  },
+  "hold-nothing-to-clean": {
+    en: ["Hold dialog, nothing to clean", "git clean when no untracked file matches."],
+    pt: ["Diálogo de espera, nada para limpar", "git clean quando nenhum arquivo não rastreado corresponde."],
+  },
+  "hold-force-push-drops-nothing": {
+    en: ["Hold dialog, force push that drops nothing", "A force push whose remote branch has no commits the local one lacks."],
+    pt: ["Diálogo de espera, force push que não descarta nada", "Um force push cujo branch remoto não tem commits que faltem no local."],
+  },
+  "hold-force-push-unknown": {
+    en: ["Hold dialog, force push to an unknown branch", "No local copy of the remote branch, so the dropped commits can't be told."],
+    pt: ["Diálogo de espera, force push para branch desconhecido", "Sem cópia local do branch remoto, então não dá para dizer quais commits sairiam."],
+  },
+  "hold-not-a-repo": {
+    en: ["Hold dialog, not a git repo", "A git command held outside a repository: git status failed."],
+    pt: ["Diálogo de espera, fora de um repositório git", "Um comando git segurado fora de um repositório: o git status falhou."],
+  },
+  "hold-missing-folder": {
+    en: ["Hold dialog, folder not found", "The command cds into a folder that doesn't exist, so nothing could be measured."],
+    pt: ["Diálogo de espera, pasta não encontrada", "O comando entra numa pasta que não existe, então nada pôde ser medido."],
+  },
+  "hold-measure-failed": {
+    en: ["Hold dialog, could not measure", "Measuring hit an error; the error is shown as the note."],
+    pt: ["Diálogo de espera, não foi possível medir", "A medição deu erro; o erro aparece como nota."],
+  },
+  "hold-in-band": {
+    en: ["Hold dialog in the band, narrow terminal", "When the terminal can't place a pane, the same dialog draws above the prompt."],
+    pt: ["Diálogo de espera na faixa, terminal estreito", "Quando o terminal não consegue abrir um painel, o mesmo diálogo aparece acima do prompt."],
+  },
+  "dialog-title": {
+    en: ["Dialog title", "\"⚠ Blast Radius\" and the kind of risky command."],
+    pt: ["Título do diálogo", "\"⚠ Blast Radius\" e o tipo de comando arriscado."],
+  },
+  "command-row": {
+    en: ["Command row", "The held command, as Claude wrote it, cut at the end when it doesn't fit."],
+    pt: ["Linha do comando", "O comando segurado, como o Claude escreveu, cortado no fim quando não cabe."],
+  },
+  "would-row": {
+    en: ["\"Would\" row", "What the command would do, in red."],
+    pt: ["Linha \"Would\"", "O que o comando faria, em vermelho."],
+  },
+  "preview-list": {
+    en: ["What it would change", "Up to 10 paths, commits or migrations, then \"+ N more\"."],
+    pt: ["O que mudaria", "Até 10 caminhos, commits ou migrations, e depois \"+ N more\"."],
+  },
+  "note-line": {
+    en: ["Note line", "Where the numbers came from, or why there are none; dim and italic."],
+    pt: ["Linha de nota", "De onde vieram os números, ou por que não há nenhum; esmaecida e em itálico."],
+  },
+  "decision-buttons": {
+    en: ["Proceed and Cancel buttons", "Proceed (1) and Cancel (2, focused first), and \"Claude is waiting on your answer\"."],
+    pt: ["Botões Proceed e Cancel", "Proceed (1) e Cancel (2, com o foco primeiro), e \"Claude is waiting on your answer\"."],
+  },
+  "toast-proceed": {
+    en: ["Toast after Proceed", "The toast shown as the held command runs."],
+    pt: ["Toast depois do Proceed", "O toast que aparece quando o comando segurado roda."],
+  },
+  "denied-cancel": {
+    en: ["Refusal after Cancel", "The reason shown on the held call, and read by Claude, after Cancel."],
+    pt: ["Recusa depois do Cancel", "O motivo mostrado na chamada segurada, e lido pelo Claude, depois do Cancel."],
+  },
+  "denied-timeout": {
+    en: ["Refusal after no answer", "The reason after 10 minutes with no answer."],
+    pt: ["Recusa sem resposta", "O motivo depois de 10 minutos sem resposta."],
+  },
+  "denied-interrupted": {
+    en: ["Refusal after an interrupt", "The reason when the turn is interrupted while the command is held."],
+    pt: ["Recusa depois de uma interrupção", "O motivo quando o turno é interrompido com o comando segurado."],
+  },
+  "denied-while-queued": {
+    en: ["Refusal while waiting behind another hold", "The reason when the turn is interrupted while this command waits for another held one."],
+    pt: ["Recusa na fila de outra espera", "O motivo quando o turno é interrompido enquanto este comando espera outro que está segurado."],
+  },
+  "denied-error": {
+    en: ["Refusal after an error", "The reason when holding the command hits an error."],
+    pt: ["Recusa depois de um erro", "O motivo quando segurar o comando dá erro."],
+  },
+};
+
+function catalogOf($, args) {
+  const lang = args?.lang === "pt" ? "pt" : "en";
+  const surface = args?.surface ?? "terminal";
+  const columns = Math.max(40, Number(args?.columns) || 80);
+  const t = $.ui.resolve({ surface, component: "Pane" });
+  const band = $.ui.resolve({ surface, component: "AbovePrompt" });
+  const sized = (tree, ui = t, width = columns) => ui.Box({ width, flexDirection: "column", children: [tree] });
+
+  // A sample hold: the command as Claude wrote it, read by `classify`.
+  const hold = (command, report, ui = t) => {
+    const risk = classify(command);
+    return dialog(ui, { label: risk.label, command, report: report(risk), onProceed: noop, onCancel: noop });
+  };
+  const rm = (command, stdout) => hold(command, (risk) => rmReport(risk, stdout));
+  const discard = (command, porcelain, shortstat) => hold(command, (risk) => discardReport(risk, ok(porcelain), ok(shortstat)));
+  const migrate = (command, run) => hold(command, (risk) => migrationReport(risk, MIGRATION_LISTERS[risk.tool], run));
+
+  const rmRisk = classify("rm -rf dist .cache");
+  const rmSample = rmReport(rmRisk, SAMPLE.rmOut);
+  const rmSummary = rmSample.summary;
+
+  const trees = {
+    "hold-rm-rf": rm("rm -rf dist .cache", SAMPLE.rmOut),
+    "hold-git-reset-hard": discard("git reset --hard HEAD", SAMPLE.porcelain, SAMPLE.shortstat),
+    "hold-git-checkout": discard("git checkout -- .", SAMPLE.porcelain, " 3 files changed, 21 insertions(+), 30 deletions(-)"),
+    "hold-git-clean": hold("git clean -fdx", () => cleanReport(ok(SAMPLE.clean))),
+    "hold-force-push": hold("git push --force origin main", () => pushReport("origin/main", "main", ok("a1b2c3d"), ok(SAMPLE.pushLog))),
+    "hold-migration": migrate("python3 manage.py migrate", ok(SAMPLE.showmigrations)),
+    "hold-migration-unknown-tool": migrate("npm run db migrate", ok("")),
+    "hold-migration-nothing-pending": migrate("python3 manage.py migrate", ok("[X] accounts.0003_profile\n[X] accounts.0004_add_avatar")),
+    "hold-migration-list-failed": migrate("bin/rails db:migrate", failed("rails: command not found")),
+    "hold-nothing-to-delete": rm("rm -rf tmp/*.log", "0 0 0"),
+    "hold-empty-folders": rm("rm -rf logs cache", "0 8192 2"),
+    "hold-rm-no-paths": rm("rm -rf", ""),
+    "hold-nothing-to-discard": discard("git reset --hard", "", ""),
+    "hold-nothing-to-clean": hold("git clean -fd", () => cleanReport(ok(""))),
+    "hold-force-push-drops-nothing": hold("git push -f origin feature/export", () => pushReport("origin/feature/export", "feature/export", ok("a1b2c3d"), ok(""))),
+    "hold-force-push-unknown": hold("git push --force upstream release", () => pushReport("upstream/release", "release", failed(""), null)),
+    "hold-not-a-repo": hold("git reset --hard", (risk) => discardReport(risk, failed("fatal: not a git repository (or any of the parent directories): .git"), null)),
+    "hold-missing-folder": hold("cd packages/old-api && rm -rf node_modules", missingDirReport),
+    "hold-measure-failed": hold("rm -rf build", (risk) => measureFailedReport(risk, new Error("bash: timed out after 15000 ms"))),
+    // A pane always has room on a desktop; only a narrow terminal falls back to the band.
+    "hold-in-band": surface === "terminal"
+      ? sized(dialog(band, { label: rmRisk.label, command: "rm -rf dist .cache", report: rmSample, onProceed: noop, onCancel: noop }), band, Math.min(columns, 80))
+      : band.Text({ dimColor: true, children: lang === "pt" ? "Só num terminal estreito demais para o painel." : "Only in a terminal too narrow for the pane." }),
+    "dialog-title": titleLine(t, rmRisk.label),
+    "command-row": commandLine(t, "rm -rf dist .cache"),
+    "would-row": wouldLine(t, rmSummary),
+    "preview-list": previewList(t, rmSample),
+    "note-line": noteLine(t, rmSample.note),
+    "decision-buttons": decisionRow(t, noop, noop),
+    "toast-proceed": t.Text({ children: PROCEED_TOAST }),
+    "denied-cancel": t.Text({ wrap: "wrap", children: denyMessage("cancel", rmSummary) }),
+    "denied-timeout": t.Text({ wrap: "wrap", children: denyMessage("timeout", rmSummary) }),
+    "denied-interrupted": t.Text({ wrap: "wrap", children: denyMessage("interrupted", rmSummary) }),
+    "denied-error": t.Text({ wrap: "wrap", children: denyMessage("error", rmSummary) }),
+    "denied-while-queued": t.Text({ wrap: "wrap", children: QUEUED_DENY }),
+  };
+
+  return Object.keys(CATALOG_TEXT).map((id) => {
+    const [name, help] = CATALOG_TEXT[id][lang];
+    const tree = id === "hold-in-band" && surface === "terminal" ? trees[id] : sized(trees[id]);
+    return { id, name, help, tree: staticTree(t, tree) };
+  });
 }
