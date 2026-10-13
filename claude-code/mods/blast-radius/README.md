@@ -23,6 +23,7 @@ The patterns it demonstrates:
 - Holding a `tool.call` until the user answers, and returning `{ deny }` with a reason Claude can act on.
 - Drawing the same report in a `Pane`, or in the `AbovePrompt` band when the terminal is too narrow for a pane.
 - Measuring with `$.process.run`, passing paths as arguments so nothing in them runs as shell.
+- A component catalog: every piece Blast Radius draws (the hold dialog for each risky kind and state, its parts, the toast and the refusals) shows, named, in the Components tab of `/mods`, through `$.blast.catalog`.
 
 ## Demo
 
