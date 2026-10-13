@@ -75,18 +75,21 @@ function countChanges(diff) {
   return { add, del };
 }
 
+// One step of the replay: a tool, the file, the line diff and a short note.
+function makeStep(tool, file, oldText, newText, note) {
+  return { tool, file, diff: diffLines(oldText, newText), note };
+}
+
 // Turns one tool call into one or more steps.
 async function stepsFor($, e) {
   let cwd = "";
   try { cwd = await $.session.cwd(); } catch { /* keep the full path */ }
   const file = relPath(cwd, e.file_path);
   if (e.tool === "Edit") {
-    return [{ tool: "Edit", file, diff: diffLines(e.old_string, e.new_string), note: e.replace_all ? "replace all" : "" }];
+    return [makeStep("Edit", file, e.old_string, e.new_string, e.replace_all ? "replace all" : "")];
   }
   if (e.tool === "MultiEdit" && Array.isArray(e.edits)) {
-    return e.edits.map((ed, k) => ({
-      tool: "MultiEdit", file, diff: diffLines(ed.old_string, ed.new_string), note: `edit ${k + 1} of ${e.edits.length}`,
-    }));
+    return e.edits.map((ed, k) => makeStep("MultiEdit", file, ed.old_string, ed.new_string, `edit ${k + 1} of ${e.edits.length}`));
   }
   if (e.tool === "Write") {
     let before = "";
@@ -97,13 +100,12 @@ async function stepsFor($, e) {
         isNew = false;
       }
     } catch { /* unreadable: show it as a new file */ }
-    return [{ tool: "Write", file, diff: diffLines(before, e.content), note: isNew ? "new file" : "rewrite" }];
+    return [makeStep("Write", file, before, e.content, isNew ? "new file" : "rewrite")];
   }
   return [];
 }
 
-function hintText() {
-  const n = state.replay.length;
+function hintText(n) {
   return `▶ Replay: ${n} edit${n === 1 ? "" : "s"} (press r)`;
 }
 
@@ -123,61 +125,129 @@ async function openReplay($) {
   return true;
 }
 
-// The replay view: one step at a time. Drawn in the Pane, or in the band
-// above the prompt when the surface can't place a pane.
+// ---- Drawing --------------------------------------------------------------
+//
+// Each builder takes the element table (`ui`) and plain data, so the pane and
+// the band draw from the same code.
+
+// The band's diff cap: what fits in the rows the band may take.
+function bandDiffLines(maxRows) {
+  return Math.max(3, Math.min(MAX_DIFF_LINES, (maxRows || 20) - 7));
+}
+
+// The band above the prompt after a turn with edits: the hint and its button.
+function hintTree(ui, n, onOpen) {
+  const { Box, Text, Button } = ui;
+  return Box({
+    flexDirection: "row", gap: 2, paddingX: 1,
+    children: [
+      Text({ color: "magenta", bold: true, children: hintText(n) }),
+      Button({ key: "open-replay", label: "Replay", hotkey: "r", onPress: onOpen }),
+    ],
+  });
+}
+
+// Shown when the pane opens on a turn with nothing recorded.
+function emptyTree(ui) {
+  return ui.Text({ dimColor: true, children: "No edits to replay." });
+}
+
+// The header: the title and "step k of n".
+function headerRow(ui, k, total) {
+  const { Box, Text } = ui;
+  return Box({ flexDirection: "row", justifyContent: "space-between", children: [
+    Text({ bold: true, color: "magenta", children: "▶ Replay Theater" }),
+    Text({ bold: true, children: `step ${k + 1} of ${total}` }),
+  ] });
+}
+
+// The step list: one cell per step, the current one highlighted.
+function stepStrip(ui, total, k) {
+  const { Box, Text } = ui;
+  const cells = Array.from({ length: total }, (_, n) =>
+    Text({ key: `s${n}`, inverse: n === k, color: n === k ? "cyan" : undefined, dimColor: n !== k, children: ` ${n + 1} ` }));
+  return Box({ flexDirection: "row", children: cells });
+}
+
+// The step's file, cut from the start when it does not fit.
+function fileLine(ui, step) {
+  return ui.Text({ bold: true, color: "cyan", wrap: "truncate-start", children: step.file });
+}
+
+// The tool, its note and the added and removed line counts.
+function metaRow(ui, step) {
+  const { Box, Text } = ui;
+  const { add, del } = countChanges(step.diff);
+  return Box({ flexDirection: "row", gap: 2, children: [
+    Text({ dimColor: true, children: `${step.tool}${step.note ? " · " + step.note : ""}` }),
+    Text({ color: "green", children: `+${add}` }),
+    Text({ color: "red", children: `-${del}` }),
+  ] });
+}
+
+// The diff: green added lines, red removed ones, dim context and "⋯" for a
+// skipped run, capped at `maxDiff` lines with "… N more lines" after.
+function diffBlock(ui, diff, maxDiff, width) {
+  const { Box, Text } = ui;
+  const shown = diff.slice(0, maxDiff);
+  const rows = shown.map((l, n) => {
+    const color = l.op === "+" ? "green" : l.op === "-" ? "red" : undefined;
+    const line = `${l.op === "~" ? " " : l.op} ${l.t}`.slice(0, width);
+    return Text({ key: `d${n}`, color, dimColor: l.op === " " || l.op === "~", wrap: "truncate-end", children: line });
+  });
+  if (diff.length > maxDiff) rows.push(Text({ key: "more", dimColor: true, children: `  … ${diff.length - maxDiff} more lines` }));
+  if (!shown.length) rows.push(Text({ key: "empty", dimColor: true, children: "  (no line changes)" }));
+  return Box({ flexDirection: "column", marginTop: 1, children: rows });
+}
+
+// Prev, Next and Close, on the hotkeys p, n and c.
+function navRow(ui, onPrev, onNext, onClose) {
+  const { Box, Button } = ui;
+  return Box({ flexDirection: "row", gap: 2, marginTop: 1, children: [
+    Button({ key: "prev", label: "◀ Prev", hotkey: "p", onPress: onPrev }),
+    Button({ key: "next", label: "Next ▶", hotkey: "n", autoFocus: true, onPress: onNext }),
+    Button({ key: "close", label: "Close", hotkey: "c", onPress: onClose }),
+  ] });
+}
+
+// The replay view: one step at a time, in a magenta frame. `onGo(to)` moves to
+// a step; `onClose` closes it.
+function replayTree(ui, { steps, index, width, maxDiff, onGo, onClose }) {
+  const total = steps.length;
+  if (!total) return emptyTree(ui);
+  const k = Math.max(0, Math.min(index, total - 1));
+  const step = steps[k];
+  return ui.Box({
+    flexDirection: "column", borderStyle: "round", borderColor: "magenta", paddingX: 1,
+    children: [
+      headerRow(ui, k, total),
+      stepStrip(ui, total, k),
+      fileLine(ui, step),
+      metaRow(ui, step),
+      diffBlock(ui, step.diff, maxDiff, width),
+      navRow(ui, () => onGo(k - 1), () => onGo(k + 1), onClose),
+    ],
+  });
+}
+
+// The live replay: drawn in the Pane, or in the band above the prompt when the
+// surface can't place a pane.
 function replayView($, e, inBand) {
-    const { Box, Text, Button } = $.ui.resolve(e);
-    const maxDiff = inBand ? Math.max(3, Math.min(MAX_DIFF_LINES, (e.maxRows || 20) - 7)) : MAX_DIFF_LINES;
-    const total = state.replay.length;
-    if (!total) return Text({ dimColor: true, children: "No edits to replay." });
-    const k = Math.max(0, Math.min(state.index, total - 1));
-    const step = state.replay[k];
-    const width = Math.max(40, (e.bodyColumns || 100) - 4);
-    const { add, del } = countChanges(step.diff);
-    const shown = step.diff.slice(0, maxDiff);
-
-    const diffRows = shown.map((l, n) => {
-      const color = l.op === "+" ? "green" : l.op === "-" ? "red" : undefined;
-      const line = `${l.op === "~" ? " " : l.op} ${l.t}`.slice(0, width);
-      return Text({ key: `d${n}`, color, dimColor: l.op === " " || l.op === "~", wrap: "truncate-end", children: line });
-    });
-    if (step.diff.length > maxDiff) diffRows.push(Text({ key: "more", dimColor: true, children: `  … ${step.diff.length - maxDiff} more lines` }));
-    if (!shown.length) diffRows.push(Text({ key: "empty", dimColor: true, children: "  (no line changes)" }));
-
-    // The step list: one cell per step, the current one highlighted.
-    const strip = state.replay.map((s, n) =>
-      Text({ key: `s${n}`, inverse: n === k, color: n === k ? "cyan" : undefined, dimColor: n !== k, children: ` ${n + 1} ` }));
-
-    const go = (to) => { state.index = Math.max(0, Math.min(to, total - 1)); $.ui.invalidate("ui.render"); };
-    const close = () => {
-      state.isOpen = false;
-      if (!state.inBand) $.ui.close({ id: PANE_ID });
-      state.inBand = false;
-      $.ui.invalidate("ui.render");
-    };
-
-    return Box({
-      flexDirection: "column", borderStyle: "round", borderColor: "magenta", paddingX: 1,
-      children: [
-        Box({ flexDirection: "row", justifyContent: "space-between", children: [
-          Text({ bold: true, color: "magenta", children: "▶ Replay Theater" }),
-          Text({ bold: true, children: `step ${k + 1} of ${total}` }),
-        ] }),
-        Box({ flexDirection: "row", children: strip }),
-        Text({ bold: true, color: "cyan", wrap: "truncate-start", children: step.file }),
-        Box({ flexDirection: "row", gap: 2, children: [
-          Text({ dimColor: true, children: `${step.tool}${step.note ? " · " + step.note : ""}` }),
-          Text({ color: "green", children: `+${add}` }),
-          Text({ color: "red", children: `-${del}` }),
-        ] }),
-        Box({ flexDirection: "column", marginTop: 1, children: diffRows }),
-        Box({ flexDirection: "row", gap: 2, marginTop: 1, children: [
-          Button({ key: "prev", label: "◀ Prev", hotkey: "p", onPress: () => go(k - 1) }),
-          Button({ key: "next", label: "Next ▶", hotkey: "n", autoFocus: true, onPress: () => go(k + 1) }),
-          Button({ key: "close", label: "Close", hotkey: "c", onPress: close }),
-        ] }),
-      ],
-    });
+  const go = (to) => { state.index = Math.max(0, Math.min(to, state.replay.length - 1)); $.ui.invalidate("ui.render"); };
+  const close = () => {
+    state.isOpen = false;
+    if (!state.inBand) $.ui.close({ id: PANE_ID });
+    state.inBand = false;
+    $.ui.invalidate("ui.render");
+  };
+  return replayTree($.ui.resolve(e), {
+    steps: state.replay,
+    index: state.index,
+    width: Math.max(40, (e.bodyColumns || 100) - 4),
+    maxDiff: inBand ? bandDiffLines(e.maxRows) : MAX_DIFF_LINES,
+    onGo: go,
+    onClose: close,
+  });
 }
 
 // The hub's /mods panel. `lang` is the hub's; anything but 'pt' is English.
@@ -278,14 +348,7 @@ export function register(on, options) {
   on("ui.render", { component: "AbovePrompt" }, ($, e, next) => {
     if (state.isOpen && state.inBand) return replayView($, e, true);
     if (!state.replay.length || state.isOpen) return next(e);
-    const { Box, Text, Button } = $.ui.resolve(e);
-    return Box({
-      flexDirection: "row", gap: 2, paddingX: 1,
-      children: [
-        Text({ color: "magenta", bold: true, children: hintText() }),
-        Button({ key: "open-replay", label: "Replay", hotkey: "r", onPress: () => openReplay($) }),
-      ],
-    });
+    return hintTree($.ui.resolve(e), state.replay.length, () => openReplay($));
   });
 
   // The pane.
