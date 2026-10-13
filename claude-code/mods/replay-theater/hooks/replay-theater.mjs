@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Replay Theater: records the file edits Claude makes in a turn, then lets you
-// step through them in a pane, one diff at a time.
+// step through them in a pane, one diff at a time. It joins the /mods panel as
+// `$.replay`, whose `open` action opens the pane.
 //
 // Claude Code 2.1.280 function hooks. Load with --plugin-dir.
 
@@ -179,18 +180,71 @@ function replayView($, e, inBand) {
     });
 }
 
+// The hub's /mods panel. `lang` is the hub's; anything but 'pt' is English.
+const TEXT = {
+  en: {
+    title: "Replay",
+    section: "Last turn",
+    edits: (n) => (n ? `${n} edit${n === 1 ? "" : "s"} in the last turn` : "no edits yet"),
+    open: "Replay the last turn",
+    openHelp: "Opens the Replay Theater pane",
+    explain: "Steps through the file edits Claude made in the last turn, one diff at a time: n next, p previous, c close.",
+    nothing: "Replay Theater: no edits in the last turn to replay.",
+  },
+  pt: {
+    title: "Replay",
+    section: "Último turno",
+    edits: (n) => (n ? `${n} ${n === 1 ? "edição" : "edições"} no último turno` : "nenhuma edição ainda"),
+    open: "Rever o último turno",
+    openHelp: "Abre o painel do Replay Theater",
+    explain: "Percorre as edições de arquivo que o Claude fez no último turno, um diff por vez: n próximo, p anterior, c fechar.",
+    nothing: "Replay Theater: nenhuma edição no último turno para rever.",
+  },
+};
+
+// The act carries no `lang`, so it answers in the one the last panel asked for.
+let lastLang = "en";
+
+function textOf(lang) {
+  return lang === "pt" ? TEXT.pt : TEXT.en;
+}
+
+function panelOf(args) {
+  lastLang = args?.lang === "pt" ? "pt" : "en";
+  const t = textOf(lastLang);
+  const n = state.replay.length;
+  return {
+    title: t.title,
+    summary: t.edits(n),
+    tone: n ? "accent" : "muted",
+    sections: [{
+      id: "last-turn",
+      title: t.section,
+      items: [
+        { kind: "action", id: "open", label: t.open, help: t.openHelp, primary: true },
+        { kind: "text", text: t.explain, tone: "muted" },
+      ],
+    }],
+  };
+}
+
+async function actOn($, args) {
+  if (args?.id !== "open") return {};
+  if (!state.replay.length) return { message: textOf(lastLang).nothing };
+  await openReplay($);
+  return {};
+}
+
 export function register(on, options) {
-  // Slash command: /replay opens the pane.
-  on("session.start", async ($, e, next) => {
-    const r = await next(e);
-    await $.command.register({ name: "replay", description: "Replay Theater: step through the last turn's file edits" });
-    return r;
+  // Adds `$.replay` for the hub's /mods panel. A call is the `replay.panel` or
+  // `replay.act` event, which the hooks below answer; the stub is the floor.
+  on("engine.create", async ($, e, next) => {
+    const built = await next(e);
+    return { ...built, replay: { panel: async () => ({ title: "", sections: [] }), act: async () => ({}) } };
   });
 
-  on("command.run", { command: "replay" }, async ($, e) => {
-    const opened = await openReplay($);
-    return { text: opened ? `Replay Theater: ${state.replay.length} edits` : "Replay Theater: no edits in the last turn." };
-  });
+  on("replay.panel", async ($, e) => ({ value: panelOf(e) }));
+  on("replay.act", async ($, e) => ({ value: await actOn($, e) }));
 
   // Record each edit, then let it run. Never blocks the call.
   on("tool.call", async ($, e, next) => {

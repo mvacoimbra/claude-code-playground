@@ -4,5 +4,6 @@
   "description": "Replay Theater: step through the file edits Claude made in the last turn, one diff at a time.",
   "author": {
     "name": "Claude Code DevRel"
-  }
+  },
+  "types": "./types/index.d.ts"
 }
