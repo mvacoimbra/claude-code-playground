@@ -63,7 +63,7 @@ Inline above the prompt in an 80-column terminal:
 **Requirements:**
 
 - The mods hub, which draws the `/mods` panel this mod joins. Without it, the replay still opens from the Replay button above the prompt.
-- Claude Code 2.1.287 or later, where mods load by default. The mod was built and tested on 2.1.280, and `claude plugin validate` passes on 2.1.285. Version 0.2.0 validates and passes its tests on 2.1.295.
+- Claude Code 2.1.287 or later, where mods load by default. The mod was built and tested on 2.1.280, and `claude plugin validate` passes on 2.1.285. Version 0.3.0 validates and passes its tests on 2.1.295.
 - A terminal. The pane is placed inline above the prompt, or docked to the right in the fullscreen layout.
 
 No environment variables or configuration.
