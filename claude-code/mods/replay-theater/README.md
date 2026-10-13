@@ -18,7 +18,7 @@ The patterns it demonstrates:
 
 - Recording from `tool.call` and always passing the call on with `next(e)`.
 - Grouping work by turn with `turn.start` and `turn.complete`, and skipping subagent turns.
-- A slash command (`/replay`) registered from `session.start` and handled in `command.run`.
+- A tab in the `/mods` panel: the mod adds `$.replay` at `engine.create` and answers `replay.panel` and `replay.act`, following the mods panel protocol. Its contract is `types/index.d.ts`.
 - A `Pane` with `Button` elements and hotkeys, with a fallback to the `AbovePrompt` band.
 
 ## Demo
@@ -52,7 +52,7 @@ Inline above the prompt in an 80-column terminal:
 
 - **Transcript:** not shared. The build ran in an internal workspace.
 - **Iterations:**
-  - The idea had the pane open by itself after each turn. The built mod shows a one-line hint above the prompt instead, and opens the pane when you ask for it with `/replay` or the Replay button.
+  - The idea had the pane open by itself after each turn. The built mod shows a one-line hint above the prompt instead, and opens the pane when you ask for it from the Replay button. Version 0.2.0 dropped the `/replay` command: the replay now opens from its tab in `/mods`.
   - A pane only takes the keyboard while nothing else holds it. When the band's Replay button is pressed, the band holds the keys, so the mod hides the band and waits briefly before it opens the pane.
   - A Write can replace a whole file, so the diff keeps only one line of context around each change, and caps each step at 12 lines.
   - Tested in Claude Code: a rename across three files made 5 edits, and the pane stepped through all of them with Prev, Next and Close. A Write of a new file showed as one step.
@@ -61,7 +61,8 @@ Inline above the prompt in an 80-column terminal:
 
 **Requirements:**
 
-- Claude Code 2.1.287 or later, where mods load by default. The mod was built and tested on 2.1.280, and `claude plugin validate` passes on 2.1.285.
+- The mods hub, which draws the `/mods` panel this mod joins. Without it, the replay still opens from the Replay button above the prompt.
+- Claude Code 2.1.287 or later, where mods load by default. The mod was built and tested on 2.1.280, and `claude plugin validate` passes on 2.1.285. Version 0.2.0 validates and passes its tests on 2.1.295.
 - A terminal. The pane is placed inline above the prompt, or docked to the right in the fullscreen layout.
 
 No environment variables or configuration.
@@ -75,10 +76,11 @@ No environment variables or configuration.
    cd claude-code-playground/claude-code/mods
    ```
 
-2. Check the plugin:
+2. Check the plugin and run its tests:
 
    ```bash
    claude plugin validate ./replay-theater
+   claude plugin test ./replay-theater
    ```
 
 3. Try it for one session:
@@ -96,7 +98,7 @@ No environment variables or configuration.
 
 4. Ask Claude for a change that edits files, for example "rename the function greet to welcome everywhere".
 5. When the turn ends, open the replay in one of two ways:
-   - Type `/replay` and press Enter.
+   - Type `/mods`, open the **Replay** tab, and press **Replay the last turn**. The tab's summary reads how many edits the last turn made ("3 edits in the last turn", or "no edits yet"); it speaks English or Portuguese, whichever the panel is set to.
    - Press `ctrl+x` then `Tab` to focus the band above the prompt, then press `r` (or Enter on the Replay button).
 6. In the pane:
 
