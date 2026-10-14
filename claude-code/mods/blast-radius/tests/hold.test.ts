@@ -6,6 +6,9 @@ import type { Engine } from 'claude-code/testing'
 // call is one, so these tests drive the hold to its end by the clock; the
 // dialog itself is drawn by the catalog tests, from the same builders.
 
+// The test environment's timer; the lib types here are ES only.
+declare function setTimeout(fn: (value?: unknown) => void, ms: number): unknown
+
 const tick = () => new Promise(resolve => setTimeout(resolve, 2))
 
 // The engine around the mod: a folder, a shell whose rm dry run finds three

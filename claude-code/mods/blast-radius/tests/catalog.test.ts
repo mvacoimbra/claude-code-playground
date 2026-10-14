@@ -64,6 +64,8 @@ const IDS = [
   'preview-list',
   'note-line',
   'decision-buttons',
+  'decided-proceed',
+  'decided-cancel',
   'toast-proceed',
   'denied-cancel',
   'denied-timeout',
@@ -77,12 +79,26 @@ async function catalog($: Engine, args: Partial<BlastPanelArgs> = {}): Promise<B
   return JSON.parse(out.text ?? '')
 }
 
-type Node = { type?: string; props?: { width?: number }; children?: unknown }
+type Node = { type?: string; props?: { width?: number; source?: string; alt?: string; color?: string; language?: string }; children?: unknown }
 
+// A Code element (the command, the list) shows its source.
 function texts(tree: unknown): string[] {
   if (typeof tree === 'string') return [tree]
   if (Array.isArray(tree)) return tree.flatMap(texts)
-  if (tree && typeof tree === 'object') return texts((tree as Node).children)
+  if (tree && typeof tree === 'object') {
+    const node = tree as Node
+    return node.type === 'Code' ? [String(node.props?.source ?? '')] : texts(node.children)
+  }
+  return []
+}
+
+// Every element of a type, depth first.
+function all(tree: unknown, type: string): Node[] {
+  if (Array.isArray(tree)) return tree.flatMap(t => all(t, type))
+  if (tree && typeof tree === 'object') {
+    const node = tree as Node
+    return [...(node.type === type ? [node] : []), ...all(node.children, type)]
+  }
   return []
 }
 
@@ -92,7 +108,7 @@ function lines(tree: unknown): string[] {
   if (Array.isArray(tree)) return tree.flatMap(lines)
   if (tree && typeof tree === 'object') {
     const node = tree as Node
-    return node.type === 'Text' ? [texts(node.children).join('')] : lines(node.children)
+    return node.type === 'Text' || node.type === 'Code' ? [texts(node).join('')] : lines(node.children)
   }
   return []
 }
@@ -128,17 +144,17 @@ test('each risky kind has its own hold dialog, drawn from the real reports', { p
   const entries = await catalog($)
 
   const rm = shown(byId(entries, 'hold-rm-rf'))
-  expect(rm).toContain('⚠ Blast Radius · rm -rf')
-  expect(rm).toContain('Command  rm -rf dist .cache')
-  expect(rm).toContain('Would    delete 214 files (about 3.4 MB)')
-  expect(rm).toContain('  dist/index.js')
-  expect(rm).toContain('  + 204 more')
+  expect(rm).toContain('⚠\nBlast Radius · rm -rf')
+  expect(rm).toContain('Command\nrm -rf dist .cache')
+  expect(rm).toContain('Would\ndelete 214 files (about 3.4 MB)')
+  expect(rm).toContain('dist/index.js\ndist/index.js.map')
+  expect(rm).toContain('+ 204 more')
   expect(rm).toContain('1: Proceed')
   expect(rm).toContain('2: Cancel')
   expect(rm).toContain('Claude is waiting on your answer')
 
   expect(shown(byId(entries, 'hold-git-reset-hard'))).toContain('discard uncommitted changes in 5 files')
-  expect(shown(byId(entries, 'hold-git-checkout'))).toContain('⚠ Blast Radius · git checkout -- .')
+  expect(shown(byId(entries, 'hold-git-checkout'))).toContain('Blast Radius · git checkout -- .')
   expect(shown(byId(entries, 'hold-git-checkout'))).toContain('discard uncommitted changes in 3 files')
   expect(shown(byId(entries, 'hold-git-clean'))).toContain('remove 6 untracked paths')
   expect(shown(byId(entries, 'hold-force-push'))).toContain('force-push to origin/main: drops 3 commits')
@@ -157,18 +173,37 @@ test('each risky kind has its own hold dialog, drawn from the real reports', { p
   expect(shown(byId(entries, 'hold-missing-folder'))).toContain("Couldn't find the folder packages/old-api")
   expect(shown(byId(entries, 'hold-measure-failed'))).toContain('(could not measure it)')
 
-  expect(shown(byId(entries, 'dialog-title'))).toBe('⚠ Blast Radius · rm -rf')
-  expect(shown(byId(entries, 'command-row'))).toBe('Command  rm -rf dist .cache')
-  expect(shown(byId(entries, 'would-row'))).toBe('Would    delete 214 files (about 3.4 MB)')
+  expect(shown(byId(entries, 'dialog-title'))).toBe('⚠\nBlast Radius · rm -rf')
+  expect(shown(byId(entries, 'command-row'))).toBe('Command\nrm -rf dist .cache')
+  expect(shown(byId(entries, 'would-row'))).toBe('Would\ndelete 214 files (about 3.4 MB)')
   expect(shown(byId(entries, 'preview-list')).split('\n')).toHaveLength(11)
   expect(shown(byId(entries, 'note-line'))).toBe('Paths: dist .cache')
-  expect(shown(byId(entries, 'decision-buttons'))).toBe('1: Proceed\n2: Cancel\nClaude is waiting on your answer')
-  expect(shown(byId(entries, 'toast-proceed'))).toBe('Blast Radius: running it')
+  expect(shown(byId(entries, 'decision-buttons'))).toBe('●\nClaude is waiting on your answer\n1: Proceed\n2: Cancel')
+  expect(shown(byId(entries, 'decided-proceed'))).toBe('●\nProceeding · running it')
+  expect(shown(byId(entries, 'decided-cancel'))).toBe('●\nCancelled · not run')
+  expect(shown(byId(entries, 'toast-proceed'))).toBe('●\nBlast Radius: running it')
+  expect(shown(byId(entries, 'denied-cancel'))).toContain('Cancelled · not run')
   expect(shown(byId(entries, 'denied-cancel'))).toContain('the user pressed Cancel. It would have: delete 214 files')
   expect(shown(byId(entries, 'denied-timeout'))).toContain('no answer within 10 minutes')
   expect(shown(byId(entries, 'denied-interrupted'))).toContain('the turn was interrupted. It would have')
   expect(shown(byId(entries, 'denied-while-queued'))).toContain('the turn was interrupted. Do not retry')
   expect(shown(byId(entries, 'denied-error'))).toContain('hit an error while holding it')
+})
+
+test('on the desktop, the icon and colour follow severity, and Cancel is the accented choice', { plugins: [HUB] }, async $ => {
+  const entries = await catalog($, { surface: 'desktop' })
+  const iconOf = (id: string) => all(byId(entries, id)?.tree, 'Svg')[0]?.props?.alt
+  // Work that can't be got back: the alert, in the error colour.
+  for (const id of ['hold-rm-rf', 'hold-git-reset-hard', 'hold-git-clean', 'hold-force-push']) expect(iconOf(id), id).toBe('alert')
+  expect(all(byId(entries, 'would-row')?.tree, 'Text').find(t => texts(t).join('') === 'delete 214 files (about 3.4 MB)')?.props?.color).toBe('error')
+  // A migration, or a command that would change nothing: the shield, in the warning colour.
+  for (const id of ['hold-migration', 'hold-nothing-to-delete', 'hold-nothing-to-discard', 'hold-force-push-drops-nothing']) expect(iconOf(id), id).toBe('shield')
+  // The command is mono, with the shell's colours.
+  expect(all(byId(entries, 'command-row')?.tree, 'Code')[0]?.props).toMatchObject({ source: 'rm -rf dist .cache', language: 'bash' })
+  // Cancel, the safe default, has the accent; Proceed stays plain.
+  const buttons = all(byId(entries, 'decision-buttons')?.tree, 'Text')
+  expect(buttons.find(t => texts(t).join('') === '[ Cancel ]')?.props?.color).toBe('claude')
+  expect(buttons.find(t => texts(t).join('') === '[ Proceed ]')?.props?.color).toBeUndefined()
 })
 
 test('the catalog is drawn at the hub’s width', { plugins: [HUB] }, async $ => {
@@ -180,7 +215,7 @@ test('the catalog is drawn at the hub’s width', { plugins: [HUB] }, async $ =>
 
 test('the dialog in the band is a terminal piece', { plugins: [HUB] }, async $ => {
   const terminal = byId(await catalog($, { surface: 'terminal' }), 'hold-in-band')
-  expect(shown(terminal)).toContain('⚠ Blast Radius · rm -rf')
+  expect(shown(terminal)).toContain('Blast Radius · rm -rf')
   expect(shown(terminal)).toContain('2: Cancel')
 
   const desktop = byId(await catalog($, { surface: 'desktop' }), 'hold-in-band')
@@ -206,7 +241,7 @@ test('another plugin can draw every catalog tree, on both surfaces', { plugins: 
       await catalog($, { surface, lang, columns: 80 })
       const pane = await $.ui.mount({ ...PANE, surface })
       for (const id of IDS) expect(await pane.find({ key: `entry-${id}` }), `${surface} ${lang} ${id}`).toBeDefined()
-      expect(await pane.find({ type: 'Text', text: '⚠ Blast Radius · rm -rf' }), surface).toBeDefined()
+      expect(await pane.find({ type: 'Text', text: 'Blast Radius · rm -rf' }), surface).toBeDefined()
       await pane.unmount()
     }
   }
