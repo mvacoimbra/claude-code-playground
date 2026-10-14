@@ -23,7 +23,7 @@
 
 import type { EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
 
-import { action, icon, kitOf, status, text } from './kit/kit'
+import { action, icon, kitOf, staticTree, status, text } from './kit/kit'
 import type { Kit, KitUi } from './kit/kit'
 import { toneOf } from './kit/tone'
 import type { KitSkin, KitTone } from './kit/tone'
@@ -766,39 +766,9 @@ function outcomeTree(k: Kit, outcome: Outcome, message: string): RenderElement {
 
 const noop = () => {}
 
-// A tree another mod can draw: plain data. A Button's onPress stays in this
-// mod, so a Button is drawn as text the way the terminal draws it (`1: Proceed`
-// for a plain one, `[ Cancel ]` in the accent for the main one), and every
-// function is left out.
-function staticTree(k: Kit, node: unknown): unknown {
-  if (Array.isArray(node)) {
-    return node.map(n => staticTree(k, n)).filter(n => n !== undefined && n !== null)
-  }
-  if (node === null || typeof node !== 'object') {
-    return typeof node === 'function' ? undefined : node
-  }
-  const el = node as { type?: string; props?: Record<string, unknown> }
-  if (el.type === 'Button') {
-    const p = el.props ?? {}
-    const label = String(p.label ?? p.key ?? '')
-    const { Text } = k.ui
-    if (p.plain) {
-      return staticTree(k, <Text key={p.key as string}>{p.hotkey ? [<Text color={k.t.ink.accent} bold>{String(p.hotkey)}</Text>, `: ${label}`] : label}</Text>)
-    }
-    return staticTree(k, <Text key={p.key as string} {...(p.variant === 'primary' ? { color: k.t.ink.accent, bold: true } : {})}>{`[ ${label} ]`}</Text>)
-  }
-  const out: Record<string, unknown> = {}
-  for (const [key, v] of Object.entries(el)) {
-    if (key === 'press' || typeof v === 'function' || v === undefined) {
-      continue
-    }
-    out[key] =
-      key === 'props'
-        ? Object.fromEntries(Object.entries((v ?? {}) as object).filter(([, x]) => typeof x !== 'function' && x !== undefined).map(([pk, x]) => [pk, pk === 'children' ? staticTree(k, x) : x]))
-        : staticTree(k, v)
-  }
-  return out
-}
+// Each tree is made static with the kit's `staticTree`: plain data another mod can draw,
+// handlers dropped and each Button drawn as its shape (a round hairline box, Cancel, the
+// main choice, filled with the accent).
 
 const ok = (stdout: string): Run => ({ exitCode: 0, stdout, stderr: '' })
 const failed = (stderr: string): Run => ({ exitCode: 1, stdout: '', stderr })
@@ -1028,6 +998,6 @@ async function catalogOf($: EngineInterface, args: Partial<BlastPanelArgs> | und
   return Object.keys(CATALOG_TEXT).map(id => {
     const [name, help] = CATALOG_TEXT[id]![lang]
     const tree = id === 'hold-in-band' && surface === 'terminal' ? trees[id] : sized(trees[id])
-    return { id, name, help, tree: staticTree(k, tree) }
+    return { id, name, help, tree: staticTree(tree, k.t) }
   })
 }
