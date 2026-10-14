@@ -16,6 +16,8 @@ When Claude calls Bash with one of the commands below, Blast Radius stops the ca
 | `manage.py migrate`, `db:migrate`, `alembic upgrade`, `prisma migrate` | The pending migrations, from the tool's own status command. |
 | any other `migrate` | A note that it can't list the pending migrations for that tool. |
 
+The pane is a notice with the command in mono, what it would do, and the list of what it would change. Its icon and colour follow how serious the command is: the alert in the error colour when it would lose work that can't be got back (files, uncommitted changes, untracked files, commits on the remote), the shield in the warning colour for a migration or a command that would change nothing. Cancel, the safe choice, is the highlighted button and has the focus; Proceed is a plain button. Once you press one, the buttons give way to what happens next ("Cancelled · not run", or "Proceeding · running it").
+
 Every other command runs as normal. If the command line moves first, with `cd dir &&`, `pushd`/`popd` or `git -C dir`, Blast Radius measures in that folder. A `cd` inside `( ... )` only applies inside the parentheses, as in the shell.
 
 The patterns it demonstrates:
@@ -23,9 +25,12 @@ The patterns it demonstrates:
 - Holding a `tool.call` until the user answers, and returning `{ deny }` with a reason Claude can act on.
 - Drawing the same report in a `Pane`, or in the `AbovePrompt` band when the terminal is too narrow for a pane.
 - Measuring with `$.process.run`, passing paths as arguments so nothing in them runs as shell.
+- The shared kit of the claude-mods pack (`hooks/kit`): the notice, icons, states and buttons follow one grammar, in the colours of the skin chosen in the skins mod, or Claude Code's own when skins isn't installed.
 - A component catalog: every piece Blast Radius draws (the hold dialog for each risky kind and state, its parts, the toast and the refusals) shows, named, in the Components tab of `/mods`, through `$.blast.catalog`.
 
 ## Demo
+
+The screenshots show version 0.2.0. Version 0.3.0 shows the same report, restyled: a notice with an icon and colour by severity, the command in mono, and Cancel as the highlighted button.
 
 `rm -rf build` held, with the files it would delete:
 
@@ -66,7 +71,7 @@ The second try, after Proceed:
 
 **Requirements:**
 
-- Claude Code 2.1.287 or later, where mods load by default. The mod was built and tested on 2.1.280, and `claude plugin validate` passes on 2.1.285.
+- Claude Code 2.1.287 or later, where mods load by default. The mod was built and tested on 2.1.280, and `claude plugin validate` passes on 2.1.285. Version 0.3.0 validates and passes its tests on 2.1.290.
 - `bash`, `git`, `find` and `du` on your `PATH`. For migrations, the project's own tool (for example `python3 manage.py showmigrations`).
 - For the side pane, a terminal about 144 columns wide or more. Narrower terminals get the band above the prompt.
 
@@ -114,7 +119,7 @@ No environment variables or configuration.
 ## Notes / limitations
 
 - It reads the command text. It doesn't parse shell fully: `$(...)`, aliases, `eval`, `bash -c "..."`, `xargs rm`, `find -delete`, scripts that call `rm`, and wrappers such as `timeout 5 rm`, `doas rm`, `time -p rm` or `env -i rm` aren't caught.
-- Only the first risky part of a command line is measured, and the pane shows the command on one line, cut off if it's long. Proceed runs the whole line as written.
+- Only the first risky part of a command line is measured. The pane shows the whole command line, wrapped when it's long. Proceed runs the whole line as written.
 - It follows `cd`, `pushd`, `popd` and `git -C` on the same line. `cd -`, and a folder that doesn't exist, can't be measured; the pane says so and still holds the command. Otherwise it starts from the session's working folder.
 - In a narrow terminal the report is drawn in the band above the prompt, which only one mod can use at a time. If another mod that draws there (such as Replay Theater or Token Weather in this folder) takes the band, the Proceed and Cancel buttons may not show, and the command is refused after 10 minutes. Use a wider terminal, or turn the other mod off, when you rely on Blast Radius.
 - One command is held at a time. A second risky call, from a subagent for example, waits until the first is answered.
