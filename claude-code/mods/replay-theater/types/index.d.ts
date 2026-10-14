@@ -10,7 +10,8 @@ export type ReplayScope = 'user' | 'session'
 export type ReplayItem =
   | { kind: 'toggle'; id: string; label: string; help?: string; value: boolean; scope?: ReplayScope }
   | { kind: 'choice'; id: string; label: string; help?: string; value: string; options: { value: string; label: string }[]; scope?: ReplayScope }
-  | { kind: 'action'; id: string; label: string; help?: string; primary?: boolean; scope?: ReplayScope }
+  // `label` is the button's; `title`, when given, names the row, with `help` under it.
+  | { kind: 'action'; id: string; label: string; title?: string; help?: string; primary?: boolean; scope?: ReplayScope }
   | { kind: 'input'; id: string; label: string; help?: string; placeholder?: string; submitLabel?: string; scope?: ReplayScope }
   | { kind: 'info'; label: string; value: string; tone?: ReplayTone }
   | { kind: 'text'; text: string; tone?: ReplayTone }

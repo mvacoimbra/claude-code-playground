@@ -12,7 +12,7 @@
 
 import type { EngineInterface, Register, RenderElement, RenderSurface } from 'claude-code'
 
-import { action, empty, group, icon, kitOf, text } from './kit/kit'
+import { action, empty, group, icon, kitOf, staticTree, text } from './kit/kit'
 import type { Kit, KitUi } from './kit/kit'
 import { toneOf } from './kit/tone'
 import type { KitSkin } from './kit/tone'
@@ -301,16 +301,16 @@ function languageOf(path: string): string | undefined {
   return ext ? LANGUAGES[ext] : undefined
 }
 
-// The step's file and what changed in it: the tool's icon, the path in mono,
+// The step's file and what changed in it: the tool's icon, the path,
 // the tool and its note, and the added and removed line counts.
 function fileRow(k: Kit, step: Step): RenderElement {
-  const { Box, Code } = k.ui as KitUi & { Code: any }
+  const { Box } = k.ui
   const { add, del } = countChanges(step.diff)
   return (
     <Box key="file" flexDirection="row" columnGap={1} paddingX={1} alignItems="flex-start">
       {icon(k, step.note === 'new file' ? 'file' : 'write', 'muted')}
       <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-        <Code key="path" source={step.file} wrap="wrap" />
+        {text(k, step.file, undefined, { key: 'path', wrap: 'wrap' })}
         {text(k, `${step.tool}${step.note ? ' · ' + step.note : ''}`, 'muted', { key: 'tool' })}
       </Box>
       <Box flexDirection="row" columnGap={1} flexShrink={0}>
@@ -415,26 +415,9 @@ async function replayView($: EngineInterface, e: { surface: RenderSurface; props
 
 const noop = () => {}
 
-// A tree another mod can draw: plain data. A Button's onPress stays in this
-// mod, so a Button is drawn as text the way the terminal draws it (`[ Label ]`,
-// the main action in the accent), and every function is left out.
-function staticTree(k: Kit, node: unknown): unknown {
-  if (Array.isArray(node)) return node.map(n => staticTree(k, n)).filter(n => n !== undefined && n !== null)
-  if (node === null || typeof node !== 'object') return typeof node === 'function' ? undefined : node
-  const el = node as { type?: string; props?: Record<string, unknown> }
-  if (el.type === 'Button') {
-    const p = el.props ?? {}
-    const label = String(p.label ?? p.key ?? '')
-    const { Text } = k.ui
-    return staticTree(k, <Text key={p.key as string} {...(p.variant === 'primary' ? { color: k.t.ink.accent, bold: true } : {})} {...(p.dimColor ? { color: k.t.ink.muted } : {})}>{`[ ${label} ]`}</Text>)
-  }
-  const out: Record<string, unknown> = {}
-  for (const [key, v] of Object.entries(el)) {
-    if (key === 'press' || typeof v === 'function' || v === undefined) continue
-    out[key] = key === 'props' ? Object.fromEntries(Object.entries((v ?? {}) as object).filter(([, x]) => typeof x !== 'function' && x !== undefined).map(([pk, x]) => [pk, pk === 'children' ? staticTree(k, x) : x])) : staticTree(k, v)
-  }
-  return out
-}
+// Each tree is made static with the kit's `staticTree`: plain data another mod can draw,
+// handlers dropped and each Button drawn as its shape (a round hairline box, the main
+// action filled with the accent).
 
 // A turn that renamed greet to welcome: the sample the catalog replays.
 function sampleSteps(): Step[] {
@@ -577,7 +560,7 @@ async function catalogOf($: EngineInterface, args: Partial<ReplayPanelArgs> | un
 
   return Object.keys(CATALOG_TEXT).map(id => {
     const [name, help] = CATALOG_TEXT[id]![lang]
-    return { id, name, help, tree: staticTree(pane, trees[id]) }
+    return { id, name, help, tree: staticTree(trees[id], pane.t) }
   })
 }
 
@@ -590,6 +573,7 @@ const TEXT = {
     editsLabel: 'Edits recorded',
     editsValue: (n: number) => (n ? plural(n, 'edit', 'edits') : 'none yet'),
     open: 'Replay',
+    openTitle: 'Replay the last turn',
     openHelp: 'Step through the last turn’s edits, one diff at a time',
     keys: 'In the pane: n next, p previous, c or Esc close.',
     nothing: 'Replay Theater: no edits in the last turn to replay.',
@@ -601,6 +585,7 @@ const TEXT = {
     editsLabel: 'Edições registradas',
     editsValue: (n: number) => (n ? `${n} ${n === 1 ? 'edição' : 'edições'}` : 'nenhuma ainda'),
     open: 'Rever',
+    openTitle: 'Rever o último turno',
     openHelp: 'Percorre as edições do último turno, um diff por vez',
     keys: 'No painel: n próximo, p anterior, c ou Esc fecha.',
     nothing: 'Replay Theater: nenhuma edição no último turno para rever.',
@@ -626,8 +611,9 @@ function panelOf(args: Partial<ReplayPanelArgs> | undefined): ReplayPanel {
         title: t.section,
         items: [
           { kind: 'info', label: t.editsLabel, value: t.editsValue(n), ...(n ? {} : { tone: 'muted' as const }) },
-          { kind: 'action', id: 'open', label: t.open, help: t.openHelp, primary: n > 0 },
           { kind: 'text', text: t.keys, tone: 'muted' },
+          // The group's main action, last.
+          { kind: 'action', id: 'open', label: t.open, title: t.openTitle, help: t.openHelp, primary: n > 0 },
         ],
       },
     ],
