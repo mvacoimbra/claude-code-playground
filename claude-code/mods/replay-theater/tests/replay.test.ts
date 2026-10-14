@@ -35,6 +35,9 @@ test('the panel is a Replay tab with the open action', { plugins: [HUB] }, async
   expect(p.summary).toBe('no edits yet')
   expect(p.sections).toHaveLength(1)
   expect(actionOf(p, 'open')?.label).toBe('Replay')
+  expect(actionOf(p, 'open')?.title).toBe('Replay the last turn')
+  // The main action closes its group.
+  expect(p.sections[0]?.items.at(-1)?.kind).toBe('action')
   expect(actionOf(p, 'open')?.help).toBe('Step through the last turn’s edits, one diff at a time')
   // With nothing to replay yet, the action is not the accent; the count says why.
   expect(actionOf(p, 'open')?.primary).toBe(false)
@@ -48,6 +51,7 @@ test('the panel speaks Portuguese when the hub does', { plugins: [HUB] }, async 
   expect(p.summary).toBe('nenhuma edição ainda')
   expect(p.sections[0]?.title).toBe('Último turno')
   expect(actionOf(p, 'open')?.label).toBe('Rever')
+  expect(actionOf(p, 'open')?.title).toBe('Rever o último turno')
   expect(JSON.stringify(p)).not.toContain('last turn')
 })
 

@@ -124,7 +124,7 @@ test('the samples are drawn with the pane’s own builders', { plugins: [HUB] },
   expect(first).toContain('@@ -3,3 +3,3 @@')
   expect(first).toContain('-export function greet(name: string) {')
   expect(first).toContain('+export function welcome(name: string) {')
-  expect(first).toContain('[ Previous ]')
+  expect(first).toContain('Previous')
 
   expect(shown(byId(entries, 'pane-multiedit-step'))).toContain('MultiEdit · edit 2 of 2')
   expect(shown(byId(entries, 'pane-write-new-file'))).toContain('Write · new file')
@@ -142,9 +142,20 @@ test('the samples are drawn with the pane’s own builders', { plugins: [HUB] },
   expect(shown(byId(entries, 'diff-skipped-run')).match(/@@ -\d+,\d+ \+\d+,\d+ @@/g)).toHaveLength(2)
   expect(shown(byId(entries, 'diff-more-lines'))).toContain('… 3 more lines')
   expect(shown(byId(entries, 'step-file-and-counts'))).toBe('src/greet.ts\nEdit\n+2\n-2')
-  // Static: each Button is drawn as the terminal draws it.
-  expect(shown(byId(entries, 'nav-buttons'))).toBe('[ Previous ]\n[ Next ]\n[ Close ]')
-  expect(shown(byId(entries, 'band-hint'))).toContain('[ Replay ]')
+  // Static: each Button is drawn as its shape, a round hairline box, the main action filled.
+  expect(shown(byId(entries, 'nav-buttons'))).toBe('Previous\nNext\nClose')
+  const boxes = (tree: unknown): Node[] => {
+    if (Array.isArray(tree)) return tree.flatMap(boxes)
+    if (tree && typeof tree === 'object') {
+      const node = tree as Node & { props?: { borderStyle?: string; backgroundColor?: string } }
+      return [...(node.type === 'Box' && node.props?.borderStyle === 'round' ? [node] : []), ...boxes(node.children)]
+    }
+    return []
+  }
+  const buttons = boxes(byId(entries, 'nav-buttons')?.tree) as (Node & { props?: { backgroundColor?: string } })[]
+  expect(buttons.map(b => texts(b).join(''))).toEqual(['Previous', 'Next', 'Close'])
+  expect(buttons.map(b => b.props?.backgroundColor)).toEqual([undefined, '#d97757', undefined])
+  expect(shown(byId(entries, 'band-hint'))).toContain('Replay')
   for (const entry of entries) expect(types(entry.tree), entry.id).not.toContain('Button')
 })
 
@@ -174,7 +185,7 @@ test('the catalog is drawn at the hub’s width', { plugins: [HUB] }, async $ =>
 
 test('the narrow band replay is a terminal piece', { plugins: [HUB] }, async $ => {
   const terminal = byId(await catalog($, { surface: 'terminal' }), 'band-replay-narrow')
-  expect(shown(terminal)).toContain('[ Next ]')
+  expect(shown(terminal)).toContain('Next')
   expect(shown(terminal)).toContain('4 of 7')
   // The band's shorter diff: five of the sixteen lines, then the rest counted.
   expect(shown(terminal)).toContain('… 11 more lines')
@@ -240,7 +251,7 @@ test('the live band and pane still draw and steps through a turn’s edits', { p
   for (const surface of SURFACES) {
     const pane = await $.ui.mount({ ...PANE, surface })
     expect(await pane.find({ type: 'Text', text: '1 of 2' }), surface).toBeDefined()
-    expect(shown({ id: '', name: '', tree: await pane.drawn() }), surface).toContain('a.ts')
+    expect(await pane.find({ type: 'Text', text: 'a.ts' }), surface).toBeDefined()
     await pane.press({ key: 'next' })
     expect(await pane.find({ type: 'Text', text: '2 of 2' }), surface).toBeDefined()
     expect(await pane.find({ type: 'Text', text: 'Edit · replace all' }), surface).toBeDefined()
