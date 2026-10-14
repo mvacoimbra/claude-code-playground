@@ -149,8 +149,7 @@ test('each risky kind has its own hold dialog, drawn from the real reports', { p
   expect(rm).toContain('Would\ndelete 214 files (about 3.4 MB)')
   expect(rm).toContain('dist/index.js\ndist/index.js.map')
   expect(rm).toContain('+ 204 more')
-  expect(rm).toContain('1: Proceed')
-  expect(rm).toContain('2: Cancel')
+  expect(rm).toContain('Proceed\nCancel')
   expect(rm).toContain('Claude is waiting on your answer')
 
   expect(shown(byId(entries, 'hold-git-reset-hard'))).toContain('discard uncommitted changes in 5 files')
@@ -178,7 +177,7 @@ test('each risky kind has its own hold dialog, drawn from the real reports', { p
   expect(shown(byId(entries, 'would-row'))).toBe('Would\ndelete 214 files (about 3.4 MB)')
   expect(shown(byId(entries, 'preview-list')).split('\n')).toHaveLength(11)
   expect(shown(byId(entries, 'note-line'))).toBe('Paths: dist .cache')
-  expect(shown(byId(entries, 'decision-buttons'))).toBe('●\nClaude is waiting on your answer\n1: Proceed\n2: Cancel')
+  expect(shown(byId(entries, 'decision-buttons'))).toBe('●\nClaude is waiting on your answer\nProceed\nCancel')
   expect(shown(byId(entries, 'decided-proceed'))).toBe('●\nProceeding · running it')
   expect(shown(byId(entries, 'decided-cancel'))).toBe('●\nCancelled · not run')
   expect(shown(byId(entries, 'toast-proceed'))).toBe('●\nBlast Radius: running it')
@@ -200,10 +199,10 @@ test('on the desktop, the icon and colour follow severity, and Cancel is the acc
   for (const id of ['hold-migration', 'hold-nothing-to-delete', 'hold-nothing-to-discard', 'hold-force-push-drops-nothing']) expect(iconOf(id), id).toBe('shield')
   // The command is mono, with the shell's colours.
   expect(all(byId(entries, 'command-row')?.tree, 'Code')[0]?.props).toMatchObject({ source: 'rm -rf dist .cache', language: 'bash' })
-  // Cancel, the safe default, has the accent; Proceed stays plain.
-  const buttons = all(byId(entries, 'decision-buttons')?.tree, 'Text')
-  expect(buttons.find(t => texts(t).join('') === '[ Cancel ]')?.props?.color).toBe('claude')
-  expect(buttons.find(t => texts(t).join('') === '[ Proceed ]')?.props?.color).toBeUndefined()
+  // Cancel, the safe default, is filled with the accent; Proceed stays a plain hairline button.
+  const buttons = all(byId(entries, 'decision-buttons')?.tree, 'Box').filter(b => (b.props as { borderStyle?: string } | undefined)?.borderStyle === 'round')
+  expect(buttons.map(b => texts(b).join(''))).toEqual(['Proceed', 'Cancel'])
+  expect(buttons.map(b => (b.props as { backgroundColor?: string }).backgroundColor)).toEqual([undefined, '#d97757'])
 })
 
 test('the catalog is drawn at the hub’s width', { plugins: [HUB] }, async $ => {
@@ -216,7 +215,7 @@ test('the catalog is drawn at the hub’s width', { plugins: [HUB] }, async $ =>
 test('the dialog in the band is a terminal piece', { plugins: [HUB] }, async $ => {
   const terminal = byId(await catalog($, { surface: 'terminal' }), 'hold-in-band')
   expect(shown(terminal)).toContain('Blast Radius · rm -rf')
-  expect(shown(terminal)).toContain('2: Cancel')
+  expect(shown(terminal)).toContain('Cancel')
 
   const desktop = byId(await catalog($, { surface: 'desktop' }), 'hold-in-band')
   expect(shown(desktop)).toBe('Only in a terminal too narrow for the pane.')
