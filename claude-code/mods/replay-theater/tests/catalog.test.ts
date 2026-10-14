@@ -63,13 +63,17 @@ async function catalog($: Engine, args: Partial<ReplayPanelArgs> = {}): Promise<
   return JSON.parse(out.text ?? '')
 }
 
-type Node = { type?: string; props?: { label?: string; width?: number }; children?: unknown }
+type Node = { type?: string; props?: { label?: string; width?: number; source?: string; format?: string }; children?: unknown }
 
 // Every string a tree shows, and every element type in it, depth first.
+// A Code element (the path, the diff) shows its source.
 function texts(tree: unknown): string[] {
   if (typeof tree === 'string') return [tree]
   if (Array.isArray(tree)) return tree.flatMap(texts)
-  if (tree && typeof tree === 'object') return texts((tree as Node).children)
+  if (tree && typeof tree === 'object') {
+    const node = tree as Node
+    return node.type === 'Code' ? [String(node.props?.source ?? '')] : texts(node.children)
+  }
   return []
 }
 
@@ -79,7 +83,7 @@ function lines(tree: unknown): string[] {
   if (Array.isArray(tree)) return tree.flatMap(lines)
   if (tree && typeof tree === 'object') {
     const node = tree as Node
-    return node.type === 'Text' ? [texts(node.children).join('')] : lines(node.children)
+    return node.type === 'Text' || node.type === 'Code' ? [texts(node).join('')] : lines(node.children)
   }
   return []
 }
@@ -114,29 +118,50 @@ test('the samples are drawn with the pane’s own builders', { plugins: [HUB] },
   const entries = await catalog($)
 
   const first = shown(byId(entries, 'pane-first-step'))
-  expect(first).toContain('▶ Replay Theater')
-  expect(first).toContain('step 1 of 7')
+  expect(first).toContain('1 of 7')
   expect(first).toContain('src/greet.ts')
-  expect(first).toContain('- export function greet(name: string) {')
-  expect(first).toContain('+ export function welcome(name: string) {')
-  expect(first).toContain('◀ Prev')
+  // The diff is unified hunks for the engine's Code element, numbered where the edit landed.
+  expect(first).toContain('@@ -3,3 +3,3 @@')
+  expect(first).toContain('-export function greet(name: string) {')
+  expect(first).toContain('+export function welcome(name: string) {')
+  expect(first).toContain('[ Previous ]')
 
   expect(shown(byId(entries, 'pane-multiedit-step'))).toContain('MultiEdit · edit 2 of 2')
   expect(shown(byId(entries, 'pane-write-new-file'))).toContain('Write · new file')
+  expect(shown(byId(entries, 'pane-write-new-file'))).toContain('@@ -0,0 +1,12 @@')
   expect(shown(byId(entries, 'pane-write-new-file'))).toContain('… 4 more lines')
   expect(shown(byId(entries, 'pane-write-rewrite'))).toContain('Write · rewrite')
-  expect(shown(byId(entries, 'pane-write-rewrite'))).toContain('⋯')
-  expect(shown(byId(entries, 'pane-no-line-changes'))).toContain('(no line changes)')
-  expect(shown(byId(entries, 'pane-last-step'))).toContain('step 7 of 7')
+  expect(shown(byId(entries, 'pane-write-rewrite'))).toContain('@@ -7,3 +7,3 @@')
+  expect(shown(byId(entries, 'pane-no-line-changes'))).toContain('No line changes')
+  expect(shown(byId(entries, 'pane-last-step'))).toContain('7 of 7')
   expect(shown(byId(entries, 'pane-last-step'))).toContain('Edit · replace all')
-  expect(shown(byId(entries, 'pane-no-edits'))).toBe('No edits to replay.')
-  expect(shown(byId(entries, 'band-hint'))).toContain('▶ Replay: 7 edits (press r)')
-  expect(shown(byId(entries, 'diff-skipped-run'))).toContain('⋯')
+  expect(shown(byId(entries, 'pane-no-edits'))).toContain('No edits to replay.')
+  expect(shown(byId(entries, 'band-hint'))).toContain('7 edits in the last turn')
+  expect(shown(byId(entries, 'band-hint'))).toContain('press r')
+  // A skipped run splits the diff into two hunks, each with its own numbers.
+  expect(shown(byId(entries, 'diff-skipped-run')).match(/@@ -\d+,\d+ \+\d+,\d+ @@/g)).toHaveLength(2)
   expect(shown(byId(entries, 'diff-more-lines'))).toContain('… 3 more lines')
-  // Static: each Button is drawn as the terminal draws it, the focused one inverted.
-  expect(shown(byId(entries, 'nav-buttons'))).toBe('[ ◀ Prev ]\n[ Next ▶ ]\n[ Close ]')
+  expect(shown(byId(entries, 'step-file-and-counts'))).toBe('src/greet.ts\nEdit\n+2\n-2')
+  // Static: each Button is drawn as the terminal draws it.
+  expect(shown(byId(entries, 'nav-buttons'))).toBe('[ Previous ]\n[ Next ]\n[ Close ]')
   expect(shown(byId(entries, 'band-hint'))).toContain('[ Replay ]')
   for (const entry of entries) expect(types(entry.tree), entry.id).not.toContain('Button')
+})
+
+test('the diff is the engine’s Code element, in the file’s language', { plugins: [HUB] }, async $ => {
+  const codes = (tree: unknown): Node[] => {
+    if (Array.isArray(tree)) return tree.flatMap(codes)
+    if (tree && typeof tree === 'object') {
+      const node = tree as Node
+      return node.type === 'Code' ? [node] : codes(node.children)
+    }
+    return []
+  }
+  for (const surface of SURFACES) {
+    const diff = codes(byId(await catalog($, { surface }), 'diff-lines')?.tree)
+    expect(diff, surface).toHaveLength(1)
+    expect(diff[0]?.props, surface).toMatchObject({ format: 'diff', path: 'src/greet.ts', language: 'typescript' })
+  }
 })
 
 test('the catalog is drawn at the hub’s width', { plugins: [HUB] }, async $ => {
@@ -149,8 +174,8 @@ test('the catalog is drawn at the hub’s width', { plugins: [HUB] }, async $ =>
 
 test('the narrow band replay is a terminal piece', { plugins: [HUB] }, async $ => {
   const terminal = byId(await catalog($, { surface: 'terminal' }), 'band-replay-narrow')
-  expect(shown(terminal)).toContain('[ Next ▶ ]')
-  expect(shown(terminal)).toContain('step 4 of 7')
+  expect(shown(terminal)).toContain('[ Next ]')
+  expect(shown(terminal)).toContain('4 of 7')
   // The band's shorter diff: five of the sixteen lines, then the rest counted.
   expect(shown(terminal)).toContain('… 11 more lines')
 
@@ -178,14 +203,14 @@ test('another plugin can draw every catalog tree, on both surfaces', { plugins: 
       await catalog($, { surface, lang, columns: 80 })
       const pane = await $.ui.mount({ ...PANE, plugin: 'hub', requestId: 'hub-components', surface })
       for (const id of IDS) expect(await pane.find({ key: `entry-${id}` }), `${surface} ${lang} ${id}`).toBeDefined()
-      expect(await pane.find({ type: 'Text', text: 'step 1 of 7' }), surface).toBeDefined()
+      expect(await pane.find({ type: 'Text', text: '1 of 7' }), surface).toBeDefined()
       await pane.unmount()
     }
   }
 })
 
 
-const BAND = { hasSurvey: false, isWorking: false, maxRows: 20, scroll: { offset: 0, bodyRows: 20 } } as never
+const BAND = { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 95, scroll: { offset: 0, bodyRows: 20 }, view: {} } as never
 
 test('the live band and pane still draw and steps through a turn’s edits', { plugins: [HUB] }, async ($, on) => {
   const clock = mock.clock(on)
@@ -203,7 +228,7 @@ test('the live band and pane still draw and steps through a turn’s edits', { p
 
   for (const surface of SURFACES) {
     const band = await $.ui.mount({ plugin: 'replay-theater', surface, viewport: { columns: 100, rows: 30 }, component: 'AbovePrompt', props: BAND })
-    expect(await band.find({ type: 'Text', text: '▶ Replay: 2 edits (press r)' }), surface).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '2 edits in the last turn' }), surface).toBeDefined()
     expect(await band.find({ key: 'open-replay' }), surface).toBeDefined()
     await band.unmount()
   }
@@ -214,13 +239,13 @@ test('the live band and pane still draw and steps through a turn’s edits', { p
 
   for (const surface of SURFACES) {
     const pane = await $.ui.mount({ ...PANE, surface })
-    expect(await pane.find({ type: 'Text', text: 'step 1 of 2' }), surface).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: 'a.ts' }), surface).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: '1 of 2' }), surface).toBeDefined()
+    expect(shown({ id: '', name: '', tree: await pane.drawn() }), surface).toContain('a.ts')
     await pane.press({ key: 'next' })
-    expect(await pane.find({ type: 'Text', text: 'step 2 of 2' }), surface).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: '2 of 2' }), surface).toBeDefined()
     expect(await pane.find({ type: 'Text', text: 'Edit · replace all' }), surface).toBeDefined()
     await pane.press({ key: 'prev' })
-    expect(await pane.find({ type: 'Text', text: 'step 1 of 2' }), surface).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: '1 of 2' }), surface).toBeDefined()
     await pane.unmount()
   }
 })

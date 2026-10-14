@@ -34,9 +34,12 @@ test('the panel is a Replay tab with the open action', { plugins: [HUB] }, async
   expect(p.title).toBe('Replay')
   expect(p.summary).toBe('no edits yet')
   expect(p.sections).toHaveLength(1)
-  expect(actionOf(p, 'open')?.label).toBe('Replay the last turn')
-  expect(actionOf(p, 'open')?.primary).toBe(true)
-  expect(itemsOf(p).some(i => i.kind === 'text' || i.kind === 'info')).toBe(true)
+  expect(actionOf(p, 'open')?.label).toBe('Replay')
+  expect(actionOf(p, 'open')?.help).toBe('Step through the last turn’s edits, one diff at a time')
+  // With nothing to replay yet, the action is not the accent; the count says why.
+  expect(actionOf(p, 'open')?.primary).toBe(false)
+  expect(itemsOf(p).find(i => i.kind === 'info')).toEqual({ kind: 'info', label: 'Edits recorded', value: 'none yet', tone: 'muted' })
+  expect(itemsOf(p).some(i => i.kind === 'text')).toBe(true)
 })
 
 test('the panel speaks Portuguese when the hub does', { plugins: [HUB] }, async $ => {
@@ -44,7 +47,7 @@ test('the panel speaks Portuguese when the hub does', { plugins: [HUB] }, async 
   expect(p.title).toBe('Replay')
   expect(p.summary).toBe('nenhuma edição ainda')
   expect(p.sections[0]?.title).toBe('Último turno')
-  expect(actionOf(p, 'open')?.label).toBe('Rever o último turno')
+  expect(actionOf(p, 'open')?.label).toBe('Rever')
   expect(JSON.stringify(p)).not.toContain('last turn')
 })
 
@@ -79,6 +82,8 @@ test('open opens the replay pane after a turn with edits', { plugins: [HUB] }, a
   await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
 
   expect((await panel($)).summary).toBe('1 edit in the last turn')
+  expect(actionOf(await panel($), 'open')?.primary).toBe(true)
+  expect(itemsOf(await panel($)).find(i => i.kind === 'info')).toEqual({ kind: 'info', label: 'Edits recorded', value: '1 edit' })
   expect((await panel($, { ...ARGS, lang: 'pt' })).summary).toBe('1 edição no último turno')
 
   // Opening waits 200ms for the band to let go of the keys, as /replay did.
@@ -98,4 +103,24 @@ test('no replay slash command is registered', async ($, on) => {
 
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
   expect(names).not.toContain('replay')
+})
+
+test('an edit is numbered where it lands in the file', async ($, on) => {
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.read', () => ({ value: 'one\ntwo\ngreet()\nfour\n' as never }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('tool.call', () => ({ result: {} as never }))
+
+  await $.turn.start({ text: 'rename', turnId: 't1' })
+  await $.tool.call({ tool: 'Edit', file_path: '/repo/a.ts', old_string: 'greet()', new_string: 'welcome()' } as never)
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+
+  const pane = await $.ui.mount({
+    plugin: 'replay-theater', surface: 'desktop', viewport: { columns: 100, rows: 30 }, component: 'Pane', requestId: 'replay-theater',
+    props: { title: 'Replay Theater', isFocused: true, bodyColumns: 58, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+  })
+  expect(JSON.stringify(await pane.drawn())).toContain('@@ -3,1 +3,1 @@\\n-greet()\\n+welcome()')
+  await pane.unmount()
 })
