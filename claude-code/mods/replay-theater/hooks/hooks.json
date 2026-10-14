@@ -1,5 +1,5 @@
 {
   "modules": [
-    "./replay-theater.mjs"
+    "./replay-theater.tsx"
   ]
 }
