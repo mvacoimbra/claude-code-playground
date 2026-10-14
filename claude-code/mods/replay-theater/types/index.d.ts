@@ -4,11 +4,14 @@
 export type ReplayLang = 'en' | 'pt'
 export type ReplayPanelArgs = { lang: ReplayLang; surface: 'terminal' | 'desktop' | 'vscode' | 'mobile'; columns: number }
 export type ReplayTone = 'ok' | 'warn' | 'err' | 'muted' | 'accent'
+// Where a setting lives: the user's (every session and project, the default) or this session's
+// alone. The hub marks the session's.
+export type ReplayScope = 'user' | 'session'
 export type ReplayItem =
-  | { kind: 'toggle'; id: string; label: string; help?: string; value: boolean }
-  | { kind: 'choice'; id: string; label: string; help?: string; value: string; options: { value: string; label: string }[] }
-  | { kind: 'action'; id: string; label: string; help?: string; primary?: boolean }
-  | { kind: 'input'; id: string; label: string; help?: string; placeholder?: string; submitLabel?: string }
+  | { kind: 'toggle'; id: string; label: string; help?: string; value: boolean; scope?: ReplayScope }
+  | { kind: 'choice'; id: string; label: string; help?: string; value: string; options: { value: string; label: string }[]; scope?: ReplayScope }
+  | { kind: 'action'; id: string; label: string; help?: string; primary?: boolean; scope?: ReplayScope }
+  | { kind: 'input'; id: string; label: string; help?: string; placeholder?: string; submitLabel?: string; scope?: ReplayScope }
   | { kind: 'info'; label: string; value: string; tone?: ReplayTone }
   | { kind: 'text'; text: string; tone?: ReplayTone }
   | { kind: 'swatch'; id: string; label: string; color: string; selected: boolean }
