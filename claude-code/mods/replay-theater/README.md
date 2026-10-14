@@ -7,10 +7,10 @@ A Claude Code mod that lets you step through the file edits Claude made in the l
 While a turn runs, Replay Theater records each file edit Claude makes (the Edit, Write and MultiEdit tool calls): the file, and the text before and after. When the turn ends, a hint appears above the prompt:
 
 ```text
-▶ Replay: 5 edits (press r)  [ Replay ]
+5 edits in the last turn  [ Replay ]  press r
 ```
 
-Open it, and a pane shows one edit at a time: the file, the tool, a count of added and removed lines, and a short diff in red and green. A strip of numbered cells shows every step, with the current one highlighted, and the header reads "step 2 of 5". Prev, Next and Close buttons move through the steps.
+Open it, and a pane shows one edit at a time. The header reads where you are ("2 of 5") beside the Previous, Next and Close buttons, with a strip that marks every step and the current one. Under it, the file path, the tool, a count of added and removed lines, and the diff, drawn by Claude Code's own `Code` element: line numbers, added and removed lines, and the file's syntax colours.
 
 Replay Theater only watches. It never blocks, changes or delays an edit.
 
@@ -21,8 +21,12 @@ The patterns it demonstrates:
 - A tab in the `/mods` panel: the mod adds `$.replay` at `engine.create` and answers `replay.panel` and `replay.act`, following the mods panel protocol. Its contract is `types/index.d.ts`.
 - A component catalog: every piece Replay Theater draws (the hint, the pane in each state, its parts) shows, named, in the Components tab of `/mods`, through `$.replay.catalog`.
 - A `Pane` with `Button` elements and hotkeys, with a fallback to the `AbovePrompt` band.
+- A diff drawn with the engine's `Code` element (`format: 'diff'`), from unified-diff hunks the mod builds.
+- The shared kit of the claude-mods pack (`hooks/kit`): every row, icon, empty state and button follows one grammar, in the colours of the skin chosen in the skins mod, or Claude Code's own when skins isn't installed.
 
 ## Demo
+
+The screenshots show version 0.3.0. Version 0.4.0 keeps the same pieces in a restyled layout: native buttons, a step strip, and the engine's own diff drawing.
 
 After a rename, the hint above the prompt:
 
@@ -63,7 +67,7 @@ Inline above the prompt in an 80-column terminal:
 **Requirements:**
 
 - The mods hub, which draws the `/mods` panel this mod joins. Without it, the replay still opens from the Replay button above the prompt.
-- Claude Code 2.1.287 or later, where mods load by default. The mod was built and tested on 2.1.280, and `claude plugin validate` passes on 2.1.285. Version 0.3.0 validates and passes its tests on 2.1.295.
+- Claude Code 2.1.287 or later, where mods load by default. The mod was built and tested on 2.1.280, and `claude plugin validate` passes on 2.1.285. Version 0.3.0 validates and passes its tests on 2.1.295, and version 0.4.0 on 2.1.290.
 - A terminal. The pane is placed inline above the prompt, or docked to the right in the fullscreen layout.
 
 No environment variables or configuration.
@@ -99,7 +103,7 @@ No environment variables or configuration.
 
 4. Ask Claude for a change that edits files, for example "rename the function greet to welcome everywhere".
 5. When the turn ends, open the replay in one of two ways:
-   - Type `/mods`, open the **Replay** tab, and press **Replay the last turn**. The tab's summary reads how many edits the last turn made ("3 edits in the last turn", or "no edits yet"); it speaks English or Portuguese, whichever the panel is set to.
+   - Type `/mods`, open the **Replay** tab, and press **Replay**. The tab's summary reads how many edits the last turn made ("3 edits in the last turn", or "no edits yet"); it speaks English or Portuguese, whichever the panel is set to.
    - Press `ctrl+x` then `Tab` to focus the band above the prompt, then press `r` (or Enter on the Replay button).
 6. In the pane:
 
@@ -109,12 +113,14 @@ No environment variables or configuration.
    | `p` | Previous step |
    | `c` or `Escape` | Close the pane |
 
+   Next is the highlighted button; on the last step, Close is.
+
    Mouse clicks on the buttons work too. The replay stays available until the next turn that edits files. A turn with no edits keeps the previous replay.
 
 ## Notes / limitations
 
-- The diff shows up to 12 lines per step, then "… N more lines". Unchanged lines are kept only next to a change, and a skipped run shows as "⋯".
-- For Edit, the diff is between `old_string` and `new_string`, not the whole file. The file's line numbers aren't shown.
+- The diff shows up to 12 lines per step, then "… N more lines". Unchanged lines are kept only next to a change; a skipped run starts a new hunk with its own line numbers.
+- For Edit, the diff is between `old_string` and `new_string`, not the whole file. Its line numbers start where `old_string` first appears in the file as it was just before the edit (for `replace_all`, the first match). If the file can't be read, they start at 1.
 - For Write, the old text is read from disk just before the write. Files over 400 lines are shown as all removed, then all added, with no line matching.
 - Edits are recorded when the tool is called. An edit that you then deny, or that fails, still shows in the replay.
 - The replay is kept in memory for the current session only. It is lost when Claude Code restarts, or when the plugin reloads.
